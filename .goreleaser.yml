@@ -1,0 +1,43 @@
+version: 2
+
+project_name: kube-service-tunnel
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd
+    binary: kube-service-tunnel
+    ldflags:
+      - -s -w
+
+archives:
+  - formats: [ 'tar.gz']
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+release:
+  github:
+    owner: hei5enbug
+    name: kube-service-tunnel
+
+homebrew_casks:
+  - name: kube-service-tunnel
+    homepage: https://github.com/hei5enbug/kube-service-tunnel
+    description: Interactive TUI for Kubernetes service port forwarding and DNS management
+    repository:
+      owner: hei5enbug
+      name: homebrew-kube-service-tunnel
+    commit_author:
+      name: goreleaser
+      email: goreleaser@users.noreply.github.com
+    directory: Casks
+
