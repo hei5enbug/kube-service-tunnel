@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/byoungmin/kube-service-tunnel/cmd/kube-service-tunnel/ui"
+	"github.com/byoungmin/kube-service-tunnel/cmd/ui"
 )
 
 func checkHostsFilePermission() error {

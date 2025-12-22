@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/byoungmin/kube-service-tunnel/cmd/kube-service-tunnel/dns"
+	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
