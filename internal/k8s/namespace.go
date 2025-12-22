@@ -8,8 +8,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// Namespace provides methods to list Kubernetes namespaces
-type Namespace interface {
+type NamespaceInterface interface {
 	ListNamespaces(ctx context.Context, contextName string) ([]string, error)
 }
 

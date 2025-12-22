@@ -9,15 +9,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// Context represents a Kubernetes context from kubeconfig
 type Context struct {
 	Name    string
 	Cluster string
 	User    string
 }
 
-// ContextLister provides methods to list Kubernetes contexts
-type ContextLister interface {
+type ContextClientInterface interface {
 	ListContexts(ctx context.Context) ([]Context, error)
 	GetCurrentContext(ctx context.Context) (string, error)
 }
@@ -35,7 +33,6 @@ func newContextClient(kubeconfigPath string) (*contextClient, error) {
 		kubeconfigPath = filepath.Join(home, ".kube", "config")
 	}
 
-	// Check if file exists
 	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("kubeconfig file not found: %s", kubeconfigPath)
 	}

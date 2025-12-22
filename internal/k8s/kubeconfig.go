@@ -22,12 +22,10 @@ func loadKubeconfigWithContext(kubeconfigPath, contextName string) (*rest.Config
 		kubeconfigPath = filepath.Join(home, ".kube", "config")
 	}
 
-	// Check if file exists
 	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("kubeconfig file not found: %s", kubeconfigPath)
 	}
 
-	// Build config with optional context
 	configOverrides := &clientcmd.ConfigOverrides{}
 	if contextName != "" {
 		configOverrides.CurrentContext = contextName
@@ -42,5 +40,9 @@ func loadKubeconfigWithContext(kubeconfigPath, contextName string) (*rest.Config
 	}
 
 	return config, nil
+}
+
+func LoadKubeconfigWithContext(kubeconfigPath, contextName string) (*rest.Config, error) {
+	return loadKubeconfigWithContext(kubeconfigPath, contextName)
 }
 

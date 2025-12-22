@@ -6,19 +6,27 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
-// Service represents a Kubernetes Service with ClusterIP
+type ServicePort struct {
+	Name       string
+	Port       int32
+	TargetPort int32
+	Protocol   string
+}
+
 type Service struct {
 	Name      string
 	Namespace string
 	ClusterIP string
 	Type      string
+	Ports     []ServicePort
+	Selector  map[string]string
 }
 
-// ServiceLister provides methods to list Kubernetes services
-type ServiceLister interface {
+type ServiceInterface interface {
 	ListServices(ctx context.Context, namespace, contextName string) ([]Service, error)
 }
 
@@ -50,23 +58,44 @@ func (s *serviceClient) ListServices(ctx context.Context, namespace, contextName
 
 	var result []Service
 	for _, svc := range services.Items {
-		// Exclude LoadBalancer and NodePort types
 		if svc.Spec.Type == corev1.ServiceTypeLoadBalancer || svc.Spec.Type == corev1.ServiceTypeNodePort {
 			continue
 		}
 
-		// Include ClusterIP type (or empty type which defaults to ClusterIP) with valid ClusterIP
-		// Exclude services without ClusterIP (empty string or "None")
 		if svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
 			serviceType := string(svc.Spec.Type)
 			if serviceType == "" {
 				serviceType = string(corev1.ServiceTypeClusterIP)
 			}
+
+			var ports []ServicePort
+			for _, port := range svc.Spec.Ports {
+				targetPort := int32(0)
+				if port.TargetPort.Type == intstr.Int {
+					targetPort = port.TargetPort.IntVal
+				}
+				ports = append(ports, ServicePort{
+					Name:       port.Name,
+					Port:       port.Port,
+					TargetPort: targetPort,
+					Protocol:   string(port.Protocol),
+				})
+			}
+
+			selector := make(map[string]string)
+			if svc.Spec.Selector != nil {
+				for k, v := range svc.Spec.Selector {
+					selector[k] = v
+				}
+			}
+
 			result = append(result, Service{
 				Name:      svc.Name,
 				Namespace: svc.Namespace,
 				ClusterIP: svc.Spec.ClusterIP,
 				Type:      serviceType,
+				Ports:     ports,
+				Selector:  selector,
 			})
 		}
 	}

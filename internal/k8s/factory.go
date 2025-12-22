@@ -1,16 +1,17 @@
 package k8s
 
-// NewContext creates a new ContextLister interface instance
-func NewContext(kubeconfigPath string) (ContextLister, error) {
+func NewContextClient(kubeconfigPath string) (ContextClientInterface, error) {
 	return newContextClient(kubeconfigPath)
 }
 
-// NewNamespace creates a new Namespace interface instance
-func NewNamespace(kubeconfigPath string) (Namespace, error) {
+func NewNamespaceClient(kubeconfigPath string) (NamespaceInterface, error) {
 	return newNamespaceClient(kubeconfigPath)
 }
 
-// NewService creates a new ServiceLister interface instance
-func NewService(kubeconfigPath string) (ServiceLister, error) {
+func NewServiceClient(kubeconfigPath string) (ServiceInterface, error) {
 	return newServiceClient(kubeconfigPath)
+}
+
+func NewPodClient(kubeconfigPath string) (PodInterface, error) {
+	return newPodClient(kubeconfigPath)
 }
