@@ -3,16 +3,21 @@ package dns
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/byoungmin/kube-service-tunnel/cmd/portforward"
 	"github.com/byoungmin/kube-service-tunnel/internal/host"
 	"github.com/byoungmin/kube-service-tunnel/internal/k8s"
-	"github.com/byoungmin/kube-service-tunnel/internal/portforward"
-	"github.com/byoungmin/kube-service-tunnel/internal/proxy"
+	portforwardexec "github.com/byoungmin/kube-service-tunnel/internal/portforward"
+	proxyhandler "github.com/byoungmin/kube-service-tunnel/internal/proxy"
 	"github.com/byoungmin/kube-service-tunnel/internal/utils"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 type DNSTunnel struct {
@@ -22,20 +27,29 @@ type DNSTunnel struct {
 }
 
 type DnsManager struct {
-	kubeconfigPath     string
-	contextClient      k8s.ContextClientInterface
-	namespaceClient    k8s.NamespaceInterface
-	serviceClient      k8s.ServiceInterface
-	hostsFileManager   host.HostsFileManagerInterface
-	portForwardManager *portforward.PortForwardManager
-	proxyServer        *proxy.ProxyServer
-	podClient          k8s.PodInterface
-	selectedContext    string
-	selectedNamespace  string
-	contexts           []k8s.Context
-	namespaces         []string
-	services           []k8s.Service
-	dnsTunnels         []DNSTunnel
+	kubeconfigPath   string
+	contextClient    k8s.ContextClientInterface
+	namespaceClient  k8s.NamespaceInterface
+	serviceClient    k8s.ServiceInterface
+	hostsFileManager host.HostsFileManagerInterface
+	podClient        k8s.PodInterface
+	selectedContext  string
+	selectedNamespace string
+	contexts         []k8s.Context
+	namespaces       []string
+	services         []k8s.Service
+	dnsTunnels       []DNSTunnel
+
+	forwards   map[string]*portforward.PortForward
+	forwardsMu sync.RWMutex
+	clientsets map[string]kubernetes.Interface
+	configs    map[string]*rest.Config
+
+	proxyServer   *http.Server
+	proxyListener net.Listener
+	proxyRoutes   map[string]int32
+	proxyMu       sync.RWMutex
+	proxyPort     int32
 }
 
 func NewDnsManager(kubeconfigPath string) (*DnsManager, error) {
@@ -76,19 +90,21 @@ func NewDnsManager(kubeconfigPath string) (*DnsManager, error) {
 	}
 
 	dnsManager := &DnsManager{
-		kubeconfigPath:     kubeconfigPath,
-		contextClient:      contextClient,
-		namespaceClient:    namespaceClient,
-		serviceClient:      serviceClient,
-		hostsFileManager:   host.NewHostsFileManager(),
-		portForwardManager: portforward.NewPortForwardManager(kubeconfigPath),
-		proxyServer:        proxy.NewProxyServer(),
-		podClient:          podClient,
-		selectedContext:    currentContext,
-		contexts:           contexts,
-		namespaces:         []string{},
-		services:           []k8s.Service{},
-		dnsTunnels:         []DNSTunnel{},
+		kubeconfigPath:   kubeconfigPath,
+		contextClient:    contextClient,
+		namespaceClient:  namespaceClient,
+		serviceClient:    serviceClient,
+		hostsFileManager: host.NewHostsFileManager(),
+		podClient:        podClient,
+		selectedContext:  currentContext,
+		contexts:         contexts,
+		namespaces:       []string{},
+		services:         []k8s.Service{},
+		dnsTunnels:       []DNSTunnel{},
+		forwards:         make(map[string]*portforward.PortForward),
+		clientsets:       make(map[string]kubernetes.Interface),
+		configs:          make(map[string]*rest.Config),
+		proxyRoutes:      make(map[string]int32),
 	}
 
 	if err := dnsManager.RefreshDNSEntries(); err != nil {
@@ -254,8 +270,8 @@ func (m *DnsManager) RegisterAllServicesForContext(contextName string) error {
 		return fmt.Errorf("create kubernetes client: %w", err)
 	}
 
-	if !m.proxyServer.IsRunning() {
-		if err := m.proxyServer.Start(80); err != nil {
+	if !m.IsProxyRunning() {
+		if err := m.StartProxyServer(80); err != nil {
 			return fmt.Errorf("start proxy server: %w", err)
 		}
 	}
@@ -326,7 +342,7 @@ func (m *DnsManager) RegisterAllServicesForContext(contextName string) error {
 				continue
 			}
 
-			activeForwards := m.portForwardManager.GetActiveForwards()
+			activeForwards := m.GetActiveForwards()
 			usedPorts := make(map[int32]bool)
 			for _, forward := range activeForwards {
 				usedPorts[forward.LocalPort] = true
@@ -338,7 +354,7 @@ func (m *DnsManager) RegisterAllServicesForContext(contextName string) error {
 				continue
 			}
 
-			err = m.portForwardManager.StartPortForward(contextName, ns, pod.Name, localPort, podPort, config, clientset)
+			err = m.StartPortForward(contextName, ns, pod.Name, localPort, podPort, config, clientset)
 			if err != nil {
 				errorCount++
 				continue
@@ -349,7 +365,7 @@ func (m *DnsManager) RegisterAllServicesForContext(contextName string) error {
 			if httpPort.Port != 80 {
 				serviceDNS = fmt.Sprintf("%s:%d.%s", svc.Name, httpPort.Port, ns)
 			}
-			m.proxyServer.AddRoute(serviceDNS, localPort)
+			m.AddProxyRoute(serviceDNS, localPort)
 
 			existingEntries[serviceDNS] = "127.0.0.1"
 
@@ -480,7 +496,7 @@ func (m *DnsManager) RegisterServicePortForward(serviceName, namespace string) e
 		return fmt.Errorf("could not determine pod port for service %s/%s", namespace, serviceName)
 	}
 
-	activeForwards := m.portForwardManager.GetActiveForwards()
+	activeForwards := m.GetActiveForwards()
 	usedPorts := make(map[int32]bool)
 	for _, forward := range activeForwards {
 		usedPorts[forward.LocalPort] = true
@@ -501,7 +517,7 @@ func (m *DnsManager) RegisterServicePortForward(serviceName, namespace string) e
 		return fmt.Errorf("create kubernetes client: %w", err)
 	}
 
-	err = m.portForwardManager.StartPortForward(m.selectedContext, namespace, pod.Name, localPort, podPort, config, clientset)
+	err = m.StartPortForward(m.selectedContext, namespace, pod.Name, localPort, podPort, config, clientset)
 	if err != nil {
 		return fmt.Errorf("start port forward: %w", err)
 	}
@@ -512,13 +528,13 @@ func (m *DnsManager) RegisterServicePortForward(serviceName, namespace string) e
 		serviceDNS = fmt.Sprintf("%s:%d.%s", serviceName, httpPort.Port, namespace)
 	}
 
-	if !m.proxyServer.IsRunning() {
-		if err := m.proxyServer.Start(80); err != nil {
+	if !m.IsProxyRunning() {
+		if err := m.StartProxyServer(80); err != nil {
 			return fmt.Errorf("start proxy server: %w", err)
 		}
 	}
 
-	m.proxyServer.AddRoute(serviceDNS, localPort)
+	m.AddProxyRoute(serviceDNS, localPort)
 
 	existingEntries, err := m.hostsFileManager.ReadExistingEntries()
 	if err != nil {
@@ -546,15 +562,15 @@ func (m *DnsManager) UnregisterServicePortForward(dnsURL string) error {
 	var targetLocalPort int32
 	var forwardKey string
 
-	if m.proxyServer != nil && m.proxyServer.IsRunning() {
-		routes := m.proxyServer.GetRoutes()
+	if m.IsProxyRunning() {
+		routes := m.GetProxyRoutes()
 		if port, exists := routes[dnsURL]; exists {
 			targetLocalPort = port
 		}
 	}
 
 	if targetLocalPort == 0 {
-		activeForwards := m.portForwardManager.GetActiveForwards()
+		activeForwards := m.GetActiveForwards()
 		for key, forward := range activeForwards {
 			if strings.Contains(key, dnsURL) {
 				targetLocalPort = forward.LocalPort
@@ -566,7 +582,7 @@ func (m *DnsManager) UnregisterServicePortForward(dnsURL string) error {
 			return fmt.Errorf("port forward not found for DNS URL: %s", dnsURL)
 		}
 	} else {
-		activeForwards := m.portForwardManager.GetActiveForwards()
+		activeForwards := m.GetActiveForwards()
 		for key, forward := range activeForwards {
 			if forward.LocalPort == targetLocalPort {
 				forwardKey = key
@@ -579,12 +595,12 @@ func (m *DnsManager) UnregisterServicePortForward(dnsURL string) error {
 		return fmt.Errorf("port forward not found for local port: %d", targetLocalPort)
 	}
 
-	if err := m.portForwardManager.StopPortForward(forwardKey); err != nil {
+	if err := m.StopPortForward(forwardKey); err != nil {
 		return fmt.Errorf("stop port forward: %w", err)
 	}
 
-	if m.proxyServer != nil && m.proxyServer.IsRunning() {
-		m.proxyServer.RemoveRoute(dnsURL)
+	if m.IsProxyRunning() {
+		m.RemoveProxyRoute(dnsURL)
 	}
 
 	existingEntries, err := m.hostsFileManager.ReadExistingEntries()
@@ -615,17 +631,184 @@ func (m *DnsManager) CleanupHostsFile() error {
 }
 
 func (m *DnsManager) Cleanup() error {
-	if m.portForwardManager != nil {
-		m.portForwardManager.StopAll()
-	}
+	m.StopAllPortForwards()
 
-	if m.proxyServer != nil && m.proxyServer.IsRunning() {
-		if err := m.proxyServer.Stop(); err != nil {
+	if m.IsProxyRunning() {
+		if err := m.StopProxyServer(); err != nil {
 			return fmt.Errorf("stop proxy server: %w", err)
 		}
 	}
 
 	return m.CleanupHostsFile()
+}
+
+func (m *DnsManager) StartPortForward(contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) error {
+	key := fmt.Sprintf("%s:%s:%s:%d", contextName, namespace, pod, remotePort)
+
+	m.forwardsMu.Lock()
+	if _, exists := m.forwards[key]; exists {
+		m.forwardsMu.Unlock()
+		return fmt.Errorf("port forward already exists: %s", key)
+	}
+
+	stopCh := make(chan struct{}, 1)
+	readyCh := make(chan struct{})
+	errorCh := make(chan error, 1)
+
+	forward := &portforward.PortForward{
+		Key:        key,
+		Context:    contextName,
+		Namespace:  namespace,
+		Pod:        pod,
+		LocalPort:  localPort,
+		RemotePort: remotePort,
+		StopCh:     stopCh,
+		ReadyCh:    readyCh,
+		ErrorCh:    errorCh,
+	}
+
+	m.forwards[key] = forward
+	m.clientsets[contextName] = clientset
+	m.configs[contextName] = config
+	m.forwardsMu.Unlock()
+
+	go portforwardexec.StartPortForwardGoroutine(config, clientset, namespace, pod, localPort, remotePort, stopCh, readyCh, errorCh)
+
+	select {
+	case <-readyCh:
+		return nil
+	case err := <-errorCh:
+		m.forwardsMu.Lock()
+		delete(m.forwards, key)
+		m.forwardsMu.Unlock()
+		return err
+	}
+}
+
+func (m *DnsManager) StopPortForward(key string) error {
+	m.forwardsMu.Lock()
+	defer m.forwardsMu.Unlock()
+
+	forward, exists := m.forwards[key]
+	if !exists {
+		return fmt.Errorf("port forward not found: %s", key)
+	}
+
+	close(forward.StopCh)
+	delete(m.forwards, key)
+	return nil
+}
+
+func (m *DnsManager) GetActiveForwards() map[string]*portforward.PortForward {
+	m.forwardsMu.RLock()
+	defer m.forwardsMu.RUnlock()
+
+	result := make(map[string]*portforward.PortForward)
+	for k, v := range m.forwards {
+		result[k] = v
+	}
+	return result
+}
+
+func (m *DnsManager) StartProxyServer(port int32) error {
+	m.proxyMu.Lock()
+	defer m.proxyMu.Unlock()
+
+	if m.proxyListener != nil {
+		return fmt.Errorf("proxy server already running")
+	}
+
+	m.proxyPort = port
+	m.proxyRoutes = make(map[string]int32)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		proxyhandler.HandleProxyRequest(m.proxyRoutes, &m.proxyMu, w, r)
+	})
+
+	m.proxyServer = &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: mux,
+	}
+
+	listener, err := net.Listen("tcp", m.proxyServer.Addr)
+	if err != nil {
+		return fmt.Errorf("listen on port %d: %w", port, err)
+	}
+
+	m.proxyListener = listener
+
+	go func() {
+		if err := m.proxyServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("proxy server error: %v\n", err)
+		}
+	}()
+
+	return nil
+}
+
+func (m *DnsManager) StopProxyServer() error {
+	m.proxyMu.Lock()
+	defer m.proxyMu.Unlock()
+
+	if m.proxyServer == nil {
+		return nil
+	}
+
+	if m.proxyListener != nil {
+		if err := m.proxyListener.Close(); err != nil {
+			return fmt.Errorf("close listener: %w", err)
+		}
+	}
+
+	if err := m.proxyServer.Close(); err != nil {
+		return fmt.Errorf("close server: %w", err)
+	}
+
+	m.proxyListener = nil
+	m.proxyServer = nil
+	m.proxyRoutes = make(map[string]int32)
+
+	return nil
+}
+
+func (m *DnsManager) IsProxyRunning() bool {
+	m.proxyMu.RLock()
+	defer m.proxyMu.RUnlock()
+	return m.proxyListener != nil
+}
+
+func (m *DnsManager) GetProxyRoutes() map[string]int32 {
+	m.proxyMu.RLock()
+	defer m.proxyMu.RUnlock()
+
+	result := make(map[string]int32)
+	for k, v := range m.proxyRoutes {
+		result[k] = v
+	}
+	return result
+}
+
+func (m *DnsManager) AddProxyRoute(host string, localPort int32) {
+	m.proxyMu.Lock()
+	defer m.proxyMu.Unlock()
+	m.proxyRoutes[host] = localPort
+}
+
+func (m *DnsManager) RemoveProxyRoute(host string) {
+	m.proxyMu.Lock()
+	defer m.proxyMu.Unlock()
+	delete(m.proxyRoutes, host)
+}
+
+func (m *DnsManager) StopAllPortForwards() {
+	m.forwardsMu.Lock()
+	defer m.forwardsMu.Unlock()
+
+	for _, forward := range m.forwards {
+		close(forward.StopCh)
+	}
+	m.forwards = make(map[string]*portforward.PortForward)
 }
 
 func FindContextIndex(contexts []k8s.Context, selectedContext string) int {
