@@ -1,4 +1,4 @@
-package k8s
+package kube
 
 import (
 	"fmt"

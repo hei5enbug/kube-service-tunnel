@@ -1,4 +1,4 @@
-package k8s
+package kube
 
 import (
 	"context"
@@ -10,13 +10,14 @@ import (
 
 type NamespaceInterface interface {
 	ListNamespaces(ctx context.Context, contextName string) ([]string, error)
+	ListNonSystemNamespaces(ctx context.Context, contextName string) ([]string, error)
 }
 
 type namespaceClient struct {
 	kubeconfigPath string
 }
 
-func newNamespaceClient(kubeconfigPath string) (*namespaceClient, error) {
+func NewNamespaceClient(kubeconfigPath string) (*namespaceClient, error) {
 	return &namespaceClient{
 		kubeconfigPath: kubeconfigPath,
 	}, nil
@@ -46,3 +47,28 @@ func (n *namespaceClient) ListNamespaces(ctx context.Context, contextName string
 	return result, nil
 }
 
+func isSystemNamespace(namespace string) bool {
+	systemNamespaces := []string{"kube-system", "kube-public", "kube-node-lease"}
+	for _, sysNs := range systemNamespaces {
+		if namespace == sysNs {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *namespaceClient) ListNonSystemNamespaces(ctx context.Context, contextName string) ([]string, error) {
+	allNamespaces, err := n.ListNamespaces(ctx, contextName)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []string
+	for _, ns := range allNamespaces {
+		if isSystemNamespace(ns) {
+			continue
+		}
+		result = append(result, ns)
+	}
+	return result, nil
+}

@@ -20,7 +20,7 @@ func (a *App) handleTunnelDeletion(dnsView *tview.Table) {
 		return
 	}
 
-	entries := a.manager.GetRegisteredDNSEntries()
+	entries := a.manager.GetAllDNSTunnels()
 	if len(entries) == 0 {
 		a.setMessage("No port forwards to delete")
 		return
@@ -33,7 +33,7 @@ func (a *App) handleTunnelDeletion(dnsView *tview.Table) {
 	}
 
 	entry := entries[entryIndex]
-	if err := a.manager.UnregisterServicePortForward(entry.DNSURL); err != nil {
+	if err := a.manager.UnregisterDNSTunnel(entry.DNSURL); err != nil {
 		a.setMessage(fmt.Sprintf("Failed to stop port forward: %v", err))
 	} else {
 		a.updateDNSView()
@@ -71,4 +71,3 @@ func renderDNSView(a *App) *tview.Table {
 
 	return dnsView
 }
-

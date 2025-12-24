@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
+	"github.com/byoungmin/kube-service-tunnel/cmd/display"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -26,14 +26,14 @@ func renderHeader(a *App) *tview.Flex {
 		SetBorder(true).
 		SetTitle("Context")
 	contextList.SetBackgroundColor(backgroundColor)
-	
+
 	a.contextList = contextList
 
 	updateContextList := func() {
 		contextList.Clear()
-		contexts := a.manager.GetContexts()
-		selectedContext := a.manager.GetSelectedContext()
-		selectedIndex := dns.FindContextIndex(contexts, selectedContext)
+		contexts := a.uiRenderer.GetContexts()
+		selectedContext := a.uiRenderer.GetSelectedContext()
+		selectedIndex := display.FindContextIndex(contexts, selectedContext)
 		for i, ctx := range contexts {
 			text := ctx.Name
 			if i == selectedIndex {
@@ -49,10 +49,10 @@ func renderHeader(a *App) *tview.Flex {
 	updateContextList()
 
 	contextList.SetSelectedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
-		contexts := a.manager.GetContexts()
+		contexts := a.uiRenderer.GetContexts()
 		if index < len(contexts) {
 			contextName := contexts[index].Name
-			if err := a.manager.SetSelectedContext(contextName); err != nil {
+			if err := a.uiRenderer.SetSelectedContext(contextName); err != nil {
 				a.setMessage(fmt.Sprintf("Error loading namespaces: %v", err))
 			} else {
 				a.setMessage(fmt.Sprintf("Context selected: %s", contextName))
@@ -86,20 +86,20 @@ func renderHeader(a *App) *tview.Flex {
 			a.app.SetFocus(a.sidebar)
 			return nil
 		case tcell.KeyCtrlP:
-			contexts := a.manager.GetContexts()
+			contexts := a.uiRenderer.GetContexts()
 			selectedIndex := contextList.GetCurrentItem()
 			if selectedIndex >= 0 && selectedIndex < len(contexts) {
 				contextName := contexts[selectedIndex].Name
-				
+
 				if a.isLoading {
 					return nil
 				}
-				
+
 				a.isLoading = true
 				loadingDone := make(chan bool)
 				loadingDots := []string{".", "..", "...", "...."}
 				index := 0
-				
+
 				go func() {
 					ticker := time.NewTicker(500 * time.Millisecond)
 					defer ticker.Stop()
@@ -116,7 +116,7 @@ func renderHeader(a *App) *tview.Flex {
 						}
 					}
 				}()
-				
+
 				go func() {
 					defer func() {
 						close(loadingDone)
@@ -124,7 +124,7 @@ func renderHeader(a *App) *tview.Flex {
 							a.isLoading = false
 						})
 					}()
-					if err := a.manager.RegisterAllServicesForContext(contextName); err != nil {
+					if err := a.manager.RegisterAllByContext(contextName); err != nil {
 						a.app.QueueUpdateDraw(func() {
 							a.setMessage(fmt.Sprintf("Failed to register all services: %v", err))
 						})
@@ -140,11 +140,10 @@ func renderHeader(a *App) *tview.Flex {
 		}
 		return event
 	})
-	
+
 	contextList.SetFocusFunc(func() {
 		a.updateHelpForFocus()
 	})
 
 	return header
 }
-

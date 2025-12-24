@@ -1,4 +1,4 @@
-package k8s
+package kube
 
 import (
 	"context"
@@ -31,7 +31,7 @@ type podClient struct {
 	kubeconfigPath string
 }
 
-func newPodClient(kubeconfigPath string) (*podClient, error) {
+func NewPodClient(kubeconfigPath string) (*podClient, error) {
 	return &podClient{
 		kubeconfigPath: kubeconfigPath,
 	}, nil
@@ -145,3 +145,43 @@ func (p *podClient) FindMatchingPods(ctx context.Context, namespace, contextName
 	return result, nil
 }
 
+func FindPodAndPortForService(
+	ctx context.Context,
+	podClient PodInterface,
+	namespace string,
+	contextName string,
+	selector map[string]string,
+	httpPort *ServicePort,
+) (Pod, int32, error) {
+	pods, err := podClient.FindMatchingPods(ctx, namespace, contextName, selector)
+	if err != nil {
+		return Pod{}, 0, fmt.Errorf("find matching pods: %w", err)
+	}
+
+	if len(pods) == 0 {
+		return Pod{}, 0, fmt.Errorf("no matching pods found")
+	}
+
+	pod := pods[0]
+	var podPort int32
+
+	if httpPort.TargetPort > 0 {
+		podPort = httpPort.TargetPort
+	} else {
+		for _, p := range pod.Ports {
+			if p.Name == httpPort.Name || p.ContainerPort == httpPort.Port {
+				podPort = p.ContainerPort
+				break
+			}
+		}
+		if podPort == 0 && len(pod.Ports) > 0 {
+			podPort = pod.Ports[0].ContainerPort
+		}
+	}
+
+	if podPort == 0 {
+		return Pod{}, 0, fmt.Errorf("could not determine pod port")
+	}
+
+	return pod, podPort, nil
+}

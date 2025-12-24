@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/byoungmin/kube-service-tunnel/cmd/display"
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -24,7 +25,8 @@ type App struct {
 	helpView    *tview.TextView
 	messageView *tview.TextView
 	root        *tview.Flex
-	manager     *dns.DnsManager
+	manager     dns.DNSManagerInterface
+	uiRenderer  display.UIRendererInterface
 	isLoading   bool
 }
 
@@ -33,33 +35,35 @@ func Run(kubeconfigPath string, bgColorName string, textColorName string) error 
 	if bgColor == tcell.ColorDefault {
 		bgColor = tcell.NewRGBColor(0, 0, 0)
 	}
-	
+
 	textCol := parseColor(textColorName)
 	if textCol == tcell.ColorDefault {
 		textCol = tcell.ColorWhite
 	}
-	
+
 	backgroundColor = bgColor
 	textColor = textCol
-	
+
 	tview.Styles.PrimitiveBackgroundColor = backgroundColor
 	tview.Styles.ContrastBackgroundColor = backgroundColor
 	tview.Styles.MoreContrastBackgroundColor = backgroundColor
 	tview.Styles.PrimaryTextColor = textColor
 	tview.Styles.SecondaryTextColor = textColor
 
-	manager, err := dns.NewDnsManager(kubeconfigPath)
+	manager, err := dns.NewDNSManager(kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("create service tunnel manager: %w", err)
 	}
 
-	if err := manager.CleanupHostsFile(); err != nil {
-		return fmt.Errorf("cleanup hosts file on startup: %w", err)
+	uiRenderer, err := display.NewUIRenderer(kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("create UI renderer: %w", err)
 	}
 
 	app := &App{
-		app:     tview.NewApplication(),
-		manager: manager,
+		app:        tview.NewApplication(),
+		manager:    manager,
+		uiRenderer: uiRenderer,
 	}
 
 	app.setupUI()
@@ -108,9 +112,9 @@ func (a *App) setupUI() {
 	a.sidebar = renderSidebar(a)
 	a.mainView = renderMainView(a)
 	a.dnsView = renderDNSView(a)
-	
+
 	a.messageView = renderMessageView(a)
-	
+
 	a.header = renderHeader(a)
 
 	servicesAndDNS := tview.NewFlex().
@@ -129,13 +133,10 @@ func (a *App) setupUI() {
 		AddItem(content, 0, 1, false)
 	a.root.SetBackgroundColor(backgroundColor)
 
-	if err := a.manager.RefreshNamespaces(); err != nil {
+	if err := a.uiRenderer.RefreshNamespaces(); err != nil {
 		a.setMessage(fmt.Sprintf("Error loading namespaces: %v", err))
 	} else {
 		a.updateSidebar()
 	}
-	if err := a.manager.RefreshDNSEntries(); err != nil {
-	}
 	a.updateDNSView()
 }
-

@@ -16,9 +16,9 @@ func renderSidebar(a *App) *tview.List {
 	sidebar.SetBackgroundColor(backgroundColor)
 
 	sidebar.SetSelectedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
-		namespaces := a.manager.GetNamespaces()
+		namespaces := a.uiRenderer.GetNamespaces()
 		if index < len(namespaces) {
-			if err := a.manager.SetSelectedNamespace(namespaces[index]); err != nil {
+			if err := a.uiRenderer.SetSelectedNamespace(namespaces[index]); err != nil {
 				a.setErrorCell(fmt.Sprintf("Error loading services: %v", err))
 			} else {
 				a.updateMainView()
@@ -38,11 +38,10 @@ func renderSidebar(a *App) *tview.List {
 		}
 		return event
 	})
-	
+
 	sidebar.SetFocusFunc(func() {
 		a.updateHelpForFocus()
 	})
 
 	return sidebar
 }
-

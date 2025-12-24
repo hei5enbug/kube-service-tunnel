@@ -1,4 +1,4 @@
-package k8s
+package kube
 
 import (
 	"context"
@@ -34,7 +34,7 @@ type serviceClient struct {
 	kubeconfigPath string
 }
 
-func newServiceClient(kubeconfigPath string) (*serviceClient, error) {
+func NewServiceClient(kubeconfigPath string) (*serviceClient, error) {
 	return &serviceClient{
 		kubeconfigPath: kubeconfigPath,
 	}, nil
@@ -103,3 +103,29 @@ func (s *serviceClient) ListServices(ctx context.Context, namespace, contextName
 	return result, nil
 }
 
+func PickHTTPPort(svc *Service) *ServicePort {
+	for i := range svc.Ports {
+		if isHTTPPort(svc.Ports[i].Port) {
+			return &svc.Ports[i]
+		}
+	}
+	return nil
+}
+
+func BuildServiceDNS(serviceName, namespace string, port int32) string {
+	host := fmt.Sprintf("%s.%s", serviceName, namespace)
+	if port == 80 {
+		return host
+	}
+	return fmt.Sprintf("%s:%d.%s", serviceName, port, namespace)
+}
+
+func isHTTPPort(port int32) bool {
+	httpPorts := []int32{80, 8080, 3000, 8000, 9000}
+	for _, p := range httpPorts {
+		if port == p {
+			return true
+		}
+	}
+	return false
+}

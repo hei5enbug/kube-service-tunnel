@@ -1,4 +1,4 @@
-package k8s
+package kube
 
 import (
 	"context"
@@ -24,7 +24,7 @@ type contextClient struct {
 	kubeconfigPath string
 }
 
-func newContextClient(kubeconfigPath string) (*contextClient, error) {
+func NewContextClient(kubeconfigPath string) (*contextClient, error) {
 	if kubeconfigPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -68,4 +68,3 @@ func (c *contextClient) GetCurrentContext(ctx context.Context) (string, error) {
 
 	return config.CurrentContext, nil
 }
-

@@ -1,822 +1,174 @@
 package dns
 
 import (
-	"context"
 	"fmt"
-	"net"
-	"net/http"
-	"sort"
-	"strings"
-	"sync"
-	"time"
 
-	"github.com/byoungmin/kube-service-tunnel/cmd/portforward"
 	"github.com/byoungmin/kube-service-tunnel/internal/host"
-	"github.com/byoungmin/kube-service-tunnel/internal/k8s"
-	portforwardexec "github.com/byoungmin/kube-service-tunnel/internal/portforward"
-	proxyhandler "github.com/byoungmin/kube-service-tunnel/internal/proxy"
-	"github.com/byoungmin/kube-service-tunnel/internal/utils"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"github.com/byoungmin/kube-service-tunnel/internal/kube"
+	proxyadapter "github.com/byoungmin/kube-service-tunnel/internal/proxy"
 )
 
 type DNSTunnel struct {
-	Context   string
-	Namespace string
-	DNSURL    string
+	Context    string
+	Namespace  string
+	DNSURL     string
+	Pod        string
+	LocalPort  int32
+	RemotePort int32
 }
 
-type DnsManager struct {
+type DNSManager struct {
 	kubeconfigPath   string
-	contextClient    k8s.ContextClientInterface
-	namespaceClient  k8s.NamespaceInterface
-	serviceClient    k8s.ServiceInterface
-	hostsFileManager host.HostsFileManagerInterface
-	podClient        k8s.PodInterface
-	selectedContext  string
-	selectedNamespace string
-	contexts         []k8s.Context
-	namespaces       []string
-	services         []k8s.Service
+	kubeAdapter      kube.KubeAdapterInterface
+	hostsFileAdapter host.HostsFileAdapterInterface
+	proxyAdapter     proxyadapter.ProxyAdapterInterface
 	dnsTunnels       []DNSTunnel
-
-	forwards   map[string]*portforward.PortForward
-	forwardsMu sync.RWMutex
-	clientsets map[string]kubernetes.Interface
-	configs    map[string]*rest.Config
-
-	proxyServer   *http.Server
-	proxyListener net.Listener
-	proxyRoutes   map[string]int32
-	proxyMu       sync.RWMutex
-	proxyPort     int32
 }
 
-func NewDnsManager(kubeconfigPath string) (*DnsManager, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	contextClient, err := k8s.NewContextClient(kubeconfigPath)
+func NewDNSManager(kubeconfigPath string) (*DNSManager, error) {
+	kubeAdapter, err := kube.NewKubeAdapter(kubeconfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("create context client: %w", err)
+		return nil, fmt.Errorf("create kube adapter: %w", err)
 	}
 
-	namespaceClient, err := k8s.NewNamespaceClient(kubeconfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("create namespace client: %w", err)
-	}
-
-	serviceClient, err := k8s.NewServiceClient(kubeconfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("create service client: %w", err)
-	}
-
-	podClient, err := k8s.NewPodClient(kubeconfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("create pod client: %w", err)
-	}
-
-	contexts, err := contextClient.ListContexts(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list contexts: %w", err)
-	}
-	sort.Slice(contexts, func(i, j int) bool {
-		return contexts[i].Name < contexts[j].Name
-	})
-
-	currentContext, err := contextClient.GetCurrentContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get current context: %w", err)
-	}
-
-	dnsManager := &DnsManager{
+	dnsManager := &DNSManager{
 		kubeconfigPath:   kubeconfigPath,
-		contextClient:    contextClient,
-		namespaceClient:  namespaceClient,
-		serviceClient:    serviceClient,
-		hostsFileManager: host.NewHostsFileManager(),
-		podClient:        podClient,
-		selectedContext:  currentContext,
-		contexts:         contexts,
-		namespaces:       []string{},
-		services:         []k8s.Service{},
+		kubeAdapter:      kubeAdapter,
+		hostsFileAdapter: host.NewHostsFileAdapter(),
+		proxyAdapter:     proxyadapter.NewProxyAdapter(),
 		dnsTunnels:       []DNSTunnel{},
-		forwards:         make(map[string]*portforward.PortForward),
-		clientsets:       make(map[string]kubernetes.Interface),
-		configs:          make(map[string]*rest.Config),
-		proxyRoutes:      make(map[string]int32),
-	}
-
-	if err := dnsManager.RefreshDNSEntries(); err != nil {
-		return nil, fmt.Errorf("refresh DNS entries: %w", err)
 	}
 
 	return dnsManager, nil
 }
 
-func (m *DnsManager) GetContexts() []k8s.Context {
-	return m.contexts
-}
-
-func (m *DnsManager) GetSelectedContext() string {
-	return m.selectedContext
-}
-
-func (m *DnsManager) GetNamespaces() []string {
-	return m.namespaces
-}
-
-func (m *DnsManager) GetSelectedNamespace() string {
-	return m.selectedNamespace
-}
-
-func (m *DnsManager) GetServices() []k8s.Service {
-	return m.services
-}
-
-func (m *DnsManager) SetSelectedContext(contextName string) error {
-	m.selectedContext = contextName
-	m.selectedNamespace = ""
-	return m.RefreshNamespaces()
-}
-
-func (m *DnsManager) SetSelectedNamespace(namespace string) error {
-	m.selectedNamespace = namespace
-	return m.RefreshServices()
-}
-
-func (m *DnsManager) isSystemNamespace(namespace string) bool {
-	systemNamespaces := []string{"kube-system", "kube-public", "kube-node-lease"}
-	for _, sysNs := range systemNamespaces {
-		if namespace == sysNs {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *DnsManager) RefreshNamespaces() error {
-	if m.selectedContext == "" {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	allNamespaces, err := m.namespaceClient.ListNamespaces(ctx, m.selectedContext)
-	if err != nil {
-		return fmt.Errorf("list namespaces: %w", err)
-	}
-
-	var namespacesWithServices []string
-	for _, ns := range allNamespaces {
-		if m.isSystemNamespace(ns) {
-			continue
-		}
-		services, err := m.serviceClient.ListServices(ctx, ns, m.selectedContext)
-		if err != nil {
-			continue
-		}
-		if len(services) > 0 {
-			namespacesWithServices = append(namespacesWithServices, ns)
-		}
-	}
-
-	m.namespaces = namespacesWithServices
-	return nil
-}
-
-func (m *DnsManager) RefreshServices() error {
-	if m.selectedContext == "" || m.selectedNamespace == "" {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	services, err := m.serviceClient.ListServices(ctx, m.selectedNamespace, m.selectedContext)
-	if err != nil {
-		return fmt.Errorf("list services: %w", err)
-	}
-
-	m.services = services
-	return nil
-}
-
-func (m *DnsManager) GetRegisteredDNSEntries() []DNSTunnel {
+func (m *DNSManager) GetAllDNSTunnels() []DNSTunnel {
 	return m.dnsTunnels
 }
 
-func (m *DnsManager) RefreshDNSEntries() error {
-	entries, err := m.hostsFileManager.ReadExistingEntries()
-	if err != nil {
-		return fmt.Errorf("read existing entries: %w", err)
-	}
-
-	var tunnels []DNSTunnel
-	for dnsName := range entries {
-		var namespace string
-		if strings.Contains(dnsName, ":") {
-			parts := strings.Split(dnsName, ":")
-			if len(parts) >= 2 {
-				namespacePart := strings.Split(parts[1], ".")
-				if len(namespacePart) >= 2 {
-					namespace = namespacePart[1]
-				}
-			}
-		} else {
-			dnsParts := strings.Split(dnsName, ".")
-			if len(dnsParts) >= 2 {
-				namespace = dnsParts[1]
-			}
-		}
-		if namespace != "" {
-			context := m.selectedContext
-			if context == "" {
-				context = "unknown"
-			}
-			tunnels = append(tunnels, DNSTunnel{
-				Context:   context,
-				Namespace: namespace,
-				DNSURL:    dnsName,
-			})
-		}
-	}
-
-	m.dnsTunnels = tunnels
-	return nil
-}
-
-func (m *DnsManager) RegisterAllServicesForContext(contextName string) error {
+func (m *DNSManager) RegisterAllByContext(contextName string) error {
 	if contextName == "" {
 		return fmt.Errorf("context name is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	usedPorts := extractUsedPorts(m.dnsTunnels)
 
-	allNamespaces, err := m.namespaceClient.ListNamespaces(ctx, contextName)
+	tunnels, err := m.kubeAdapter.RegisterAllServicesForContext(contextName, usedPorts)
 	if err != nil {
-		return fmt.Errorf("list namespaces: %w", err)
+		return err
 	}
 
-	config, err := k8s.LoadKubeconfigWithContext(m.kubeconfigPath, contextName)
-	if err != nil {
-		return fmt.Errorf("load kubeconfig: %w", err)
+	if err := m.proxyAdapter.StartIfNotRunning(80); err != nil {
+		return fmt.Errorf("start proxy server: %w", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("create kubernetes client: %w", err)
+	routes := make(map[string]int32)
+	for _, tunnel := range tunnels {
+		m.dnsTunnels = append(m.dnsTunnels, convertToDNSTunnel(tunnel))
+		routes[tunnel.DNSURL] = tunnel.LocalPort
 	}
 
-	if !m.IsProxyRunning() {
-		if err := m.StartProxyServer(80); err != nil {
-			return fmt.Errorf("start proxy server: %w", err)
+	m.proxyAdapter.AddRoutes(routes)
+
+	for _, tunnel := range tunnels {
+		if err := m.hostsFileAdapter.AddEntry(tunnel.DNSURL); err != nil {
+			return fmt.Errorf("add hosts entry: %w", err)
 		}
-	}
-
-	existingEntries, err := m.hostsFileManager.ReadExistingEntries()
-	if err != nil {
-		existingEntries = make(map[string]string)
-	}
-
-	var registeredCount int
-	var errorCount int
-	for _, ns := range allNamespaces {
-		if m.isSystemNamespace(ns) {
-			continue
-		}
-		services, err := m.serviceClient.ListServices(ctx, ns, contextName)
-		if err != nil {
-			errorCount++
-			continue
-		}
-		for _, svc := range services {
-			if svc.ClusterIP == "" {
-				continue
-			}
-
-			var httpPort *k8s.ServicePort
-			for i := range svc.Ports {
-				if utils.IsHTTPPort(svc.Ports[i].Port) {
-					httpPort = &svc.Ports[i]
-					break
-				}
-			}
-
-			if httpPort == nil {
-				errorCount++
-				continue
-			}
-
-			pods, err := m.podClient.FindMatchingPods(ctx, ns, contextName, svc.Selector)
-			if err != nil {
-				errorCount++
-				continue
-			}
-
-			if len(pods) == 0 {
-				errorCount++
-				continue
-			}
-
-			pod := pods[0]
-			var podPort int32
-			if httpPort.TargetPort > 0 {
-				podPort = httpPort.TargetPort
-			} else {
-				for _, p := range pod.Ports {
-					if p.Name == httpPort.Name || p.ContainerPort == httpPort.Port {
-						podPort = p.ContainerPort
-						break
-					}
-				}
-				if podPort == 0 && len(pod.Ports) > 0 {
-					podPort = pod.Ports[0].ContainerPort
-				}
-			}
-
-			if podPort == 0 {
-				errorCount++
-				continue
-			}
-
-			activeForwards := m.GetActiveForwards()
-			usedPorts := make(map[int32]bool)
-			for _, forward := range activeForwards {
-				usedPorts[forward.LocalPort] = true
-			}
-
-			localPort, err := utils.FindAvailablePort(40000, usedPorts)
-			if err != nil {
-				errorCount++
-				continue
-			}
-
-			err = m.StartPortForward(contextName, ns, pod.Name, localPort, podPort, config, clientset)
-			if err != nil {
-				errorCount++
-				continue
-			}
-
-			serviceHost := fmt.Sprintf("%s.%s", svc.Name, ns)
-			serviceDNS := serviceHost
-			if httpPort.Port != 80 {
-				serviceDNS = fmt.Sprintf("%s:%d.%s", svc.Name, httpPort.Port, ns)
-			}
-			m.AddProxyRoute(serviceDNS, localPort)
-
-			existingEntries[serviceDNS] = "127.0.0.1"
-
-			registeredCount++
-		}
-	}
-
-	if registeredCount > 0 {
-		if err := m.hostsFileManager.WriteEntries(existingEntries); err != nil {
-			return fmt.Errorf("write hosts file: %w", err)
-		}
-	}
-
-	if err := m.RefreshDNSEntries(); err != nil {
-		return fmt.Errorf("refresh DNS entries: %w", err)
-	}
-
-	if registeredCount == 0 {
-		return fmt.Errorf("no services found to register")
 	}
 
 	return nil
 }
 
-func (m *DnsManager) RegisterService(serviceName, namespace string) error {
-	if serviceName == "" || namespace == "" {
-		return fmt.Errorf("service name and namespace are required")
+func (m *DNSManager) RegisterDNSTunnel(contextName, serviceName, namespace string) error {
+	if contextName == "" || serviceName == "" || namespace == "" {
+		return fmt.Errorf("context name, service name and namespace are required")
 	}
 
-	services := m.GetServices()
-	var targetService *k8s.Service
-	for _, svc := range services {
-		if svc.Name == serviceName && svc.Namespace == namespace {
-			if svc.ClusterIP == "" {
-				return fmt.Errorf("service %s/%s has no ClusterIP", namespace, serviceName)
-			}
-			targetService = &svc
-			break
-		}
-	}
+	usedPorts := extractUsedPorts(m.dnsTunnels)
 
-	if targetService == nil {
-		return fmt.Errorf("service %s/%s not found in current namespace", namespace, serviceName)
-	}
-
-	dnsName := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, namespace)
-	
-	existingEntries, err := m.hostsFileManager.ReadExistingEntries()
+	tunnel, err := m.kubeAdapter.RegisterServicePortForward(contextName, serviceName, namespace, usedPorts)
 	if err != nil {
-		existingEntries = make(map[string]string)
-	}
-	
-	existingEntries[dnsName] = targetService.ClusterIP
-	
-	if err := m.hostsFileManager.WriteEntries(existingEntries); err != nil {
-		return fmt.Errorf("write service to hosts file: %w", err)
+		return err
 	}
 
-	if err := m.RefreshDNSEntries(); err != nil {
-		return fmt.Errorf("refresh DNS entries: %w", err)
+	if err := m.proxyAdapter.StartIfNotRunning(80); err != nil {
+		return fmt.Errorf("start proxy server: %w", err)
+	}
+
+	m.proxyAdapter.AddRoute(tunnel.DNSURL, tunnel.LocalPort)
+
+	m.dnsTunnels = append(m.dnsTunnels, convertToDNSTunnel(tunnel))
+
+	if err := m.hostsFileAdapter.AddEntry(tunnel.DNSURL); err != nil {
+		return fmt.Errorf("add hosts entry: %w", err)
 	}
 
 	return nil
 }
 
-func (m *DnsManager) RegisterServicePortForward(serviceName, namespace string) error {
-	if serviceName == "" || namespace == "" {
-		return fmt.Errorf("service name and namespace are required")
-	}
-
-	services := m.GetServices()
-	var targetService *k8s.Service
-	for _, svc := range services {
-		if svc.Name == serviceName && svc.Namespace == namespace {
-			if svc.ClusterIP == "" {
-				return fmt.Errorf("service %s/%s has no ClusterIP", namespace, serviceName)
-			}
-			targetService = &svc
-			break
-		}
-	}
-
-	if targetService == nil {
-		return fmt.Errorf("service %s/%s not found in current namespace", namespace, serviceName)
-	}
-
-	var httpPort *k8s.ServicePort
-	for i := range targetService.Ports {
-		if utils.IsHTTPPort(targetService.Ports[i].Port) {
-			httpPort = &targetService.Ports[i]
-			break
-		}
-	}
-
-	if httpPort == nil {
-		return fmt.Errorf("no HTTP port found for service %s/%s", namespace, serviceName)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	pods, err := m.podClient.FindMatchingPods(ctx, namespace, m.selectedContext, targetService.Selector)
-	if err != nil {
-		return fmt.Errorf("find matching pods: %w", err)
-	}
-
-	if len(pods) == 0 {
-		return fmt.Errorf("no matching pods found for service %s/%s", namespace, serviceName)
-	}
-
-	pod := pods[0]
-	var podPort int32
-	if httpPort.TargetPort > 0 {
-		podPort = httpPort.TargetPort
-	} else {
-		for _, p := range pod.Ports {
-			if p.Name == httpPort.Name || p.ContainerPort == httpPort.Port {
-				podPort = p.ContainerPort
-				break
-			}
-		}
-		if podPort == 0 && len(pod.Ports) > 0 {
-			podPort = pod.Ports[0].ContainerPort
-		}
-	}
-
-	if podPort == 0 {
-		return fmt.Errorf("could not determine pod port for service %s/%s", namespace, serviceName)
-	}
-
-	activeForwards := m.GetActiveForwards()
-	usedPorts := make(map[int32]bool)
-	for _, forward := range activeForwards {
-		usedPorts[forward.LocalPort] = true
-	}
-
-	localPort, err := utils.FindAvailablePort(40000, usedPorts)
-	if err != nil {
-		return fmt.Errorf("find available port: %w", err)
-	}
-
-	config, err := k8s.LoadKubeconfigWithContext(m.kubeconfigPath, m.selectedContext)
-	if err != nil {
-		return fmt.Errorf("load kubeconfig: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("create kubernetes client: %w", err)
-	}
-
-	err = m.StartPortForward(m.selectedContext, namespace, pod.Name, localPort, podPort, config, clientset)
-	if err != nil {
-		return fmt.Errorf("start port forward: %w", err)
-	}
-
-	serviceHost := fmt.Sprintf("%s.%s", serviceName, namespace)
-	serviceDNS := serviceHost
-	if httpPort.Port != 80 {
-		serviceDNS = fmt.Sprintf("%s:%d.%s", serviceName, httpPort.Port, namespace)
-	}
-
-	if !m.IsProxyRunning() {
-		if err := m.StartProxyServer(80); err != nil {
-			return fmt.Errorf("start proxy server: %w", err)
-		}
-	}
-
-	m.AddProxyRoute(serviceDNS, localPort)
-
-	existingEntries, err := m.hostsFileManager.ReadExistingEntries()
-	if err != nil {
-		existingEntries = make(map[string]string)
-	}
-
-	existingEntries[serviceDNS] = "127.0.0.1"
-
-	if err := m.hostsFileManager.WriteEntries(existingEntries); err != nil {
-		return fmt.Errorf("write service to hosts file: %w", err)
-	}
-
-	if err := m.RefreshDNSEntries(); err != nil {
-		return fmt.Errorf("refresh DNS entries: %w", err)
-	}
-
-	return nil
-}
-
-func (m *DnsManager) UnregisterServicePortForward(dnsURL string) error {
+func (m *DNSManager) UnregisterDNSTunnel(dnsURL string) error {
 	if dnsURL == "" {
 		return fmt.Errorf("DNS URL is required")
 	}
 
-	var targetLocalPort int32
-	var forwardKey string
-
-	if m.IsProxyRunning() {
-		routes := m.GetProxyRoutes()
-		if port, exists := routes[dnsURL]; exists {
-			targetLocalPort = port
+	index := -1
+	var tunnel DNSTunnel
+	for i, t := range m.dnsTunnels {
+		if t.DNSURL == dnsURL {
+			index = i
+			tunnel = t
+			break
 		}
 	}
-
-	if targetLocalPort == 0 {
-		activeForwards := m.GetActiveForwards()
-		for key, forward := range activeForwards {
-			if strings.Contains(key, dnsURL) {
-				targetLocalPort = forward.LocalPort
-				forwardKey = key
-				break
-			}
-		}
-		if targetLocalPort == 0 {
-			return fmt.Errorf("port forward not found for DNS URL: %s", dnsURL)
-		}
-	} else {
-		activeForwards := m.GetActiveForwards()
-		for key, forward := range activeForwards {
-			if forward.LocalPort == targetLocalPort {
-				forwardKey = key
-				break
-			}
-		}
+	if index == -1 {
+		return fmt.Errorf("tunnel not found for DNS URL: %s", dnsURL)
 	}
 
-	if forwardKey == "" {
-		return fmt.Errorf("port forward not found for local port: %d", targetLocalPort)
-	}
-
-	if err := m.StopPortForward(forwardKey); err != nil {
+	if err := m.kubeAdapter.UnregisterServicePortForward(tunnel.Context, tunnel.Namespace, tunnel.Pod, tunnel.RemotePort); err != nil {
 		return fmt.Errorf("stop port forward: %w", err)
 	}
 
-	if m.IsProxyRunning() {
-		m.RemoveProxyRoute(dnsURL)
-	}
+	m.proxyAdapter.RemoveRoute(dnsURL)
 
-	existingEntries, err := m.hostsFileManager.ReadExistingEntries()
-	if err != nil {
-		return fmt.Errorf("read existing entries: %w", err)
-	}
+	m.dnsTunnels = append(m.dnsTunnels[:index], m.dnsTunnels[index+1:]...)
 
-	delete(existingEntries, dnsURL)
-
-	if err := m.hostsFileManager.WriteEntries(existingEntries); err != nil {
-		return fmt.Errorf("write hosts file: %w", err)
-	}
-
-	if err := m.RefreshDNSEntries(); err != nil {
-		return fmt.Errorf("refresh DNS entries: %w", err)
+	if err := m.hostsFileAdapter.RemoveEntry(dnsURL); err != nil {
+		return fmt.Errorf("remove hosts entry: %w", err)
 	}
 
 	return nil
 }
 
-func (m *DnsManager) CleanupHostsFile() error {
-	if m.hostsFileManager != nil {
-		if err := m.hostsFileManager.ClearAllEntries(); err != nil {
-			return fmt.Errorf("clear hosts file entries: %w", err)
-		}
+func (m *DNSManager) Cleanup() error {
+	m.kubeAdapter.StopAllPortForwards()
+
+	if err := m.proxyAdapter.Stop(); err != nil {
+		return fmt.Errorf("stop proxy server: %w", err)
 	}
+
+	if err := m.hostsFileAdapter.ClearAllEntries(); err != nil {
+		return fmt.Errorf("clear hosts file entries: %w", err)
+	}
+
+	m.dnsTunnels = []DNSTunnel{}
 	return nil
 }
 
-func (m *DnsManager) Cleanup() error {
-	m.StopAllPortForwards()
-
-	if m.IsProxyRunning() {
-		if err := m.StopProxyServer(); err != nil {
-			return fmt.Errorf("stop proxy server: %w", err)
-		}
+func extractUsedPorts(tunnels []DNSTunnel) map[int32]bool {
+	usedPorts := make(map[int32]bool)
+	for _, t := range tunnels {
+		usedPorts[t.LocalPort] = true
 	}
-
-	return m.CleanupHostsFile()
+	return usedPorts
 }
 
-func (m *DnsManager) StartPortForward(contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) error {
-	key := fmt.Sprintf("%s:%s:%s:%d", contextName, namespace, pod, remotePort)
-
-	m.forwardsMu.Lock()
-	if _, exists := m.forwards[key]; exists {
-		m.forwardsMu.Unlock()
-		return fmt.Errorf("port forward already exists: %s", key)
-	}
-
-	stopCh := make(chan struct{}, 1)
-	readyCh := make(chan struct{})
-	errorCh := make(chan error, 1)
-
-	forward := &portforward.PortForward{
-		Key:        key,
-		Context:    contextName,
-		Namespace:  namespace,
-		Pod:        pod,
-		LocalPort:  localPort,
-		RemotePort: remotePort,
-		StopCh:     stopCh,
-		ReadyCh:    readyCh,
-		ErrorCh:    errorCh,
-	}
-
-	m.forwards[key] = forward
-	m.clientsets[contextName] = clientset
-	m.configs[contextName] = config
-	m.forwardsMu.Unlock()
-
-	go portforwardexec.StartPortForwardGoroutine(config, clientset, namespace, pod, localPort, remotePort, stopCh, readyCh, errorCh)
-
-	select {
-	case <-readyCh:
-		return nil
-	case err := <-errorCh:
-		m.forwardsMu.Lock()
-		delete(m.forwards, key)
-		m.forwardsMu.Unlock()
-		return err
+func convertToDNSTunnel(tunnel kube.ServiceTunnel) DNSTunnel {
+	return DNSTunnel{
+		Context:    tunnel.Context,
+		Namespace:  tunnel.Namespace,
+		DNSURL:     tunnel.DNSURL,
+		Pod:        tunnel.Pod,
+		LocalPort:  tunnel.LocalPort,
+		RemotePort: tunnel.RemotePort,
 	}
 }
-
-func (m *DnsManager) StopPortForward(key string) error {
-	m.forwardsMu.Lock()
-	defer m.forwardsMu.Unlock()
-
-	forward, exists := m.forwards[key]
-	if !exists {
-		return fmt.Errorf("port forward not found: %s", key)
-	}
-
-	close(forward.StopCh)
-	delete(m.forwards, key)
-	return nil
-}
-
-func (m *DnsManager) GetActiveForwards() map[string]*portforward.PortForward {
-	m.forwardsMu.RLock()
-	defer m.forwardsMu.RUnlock()
-
-	result := make(map[string]*portforward.PortForward)
-	for k, v := range m.forwards {
-		result[k] = v
-	}
-	return result
-}
-
-func (m *DnsManager) StartProxyServer(port int32) error {
-	m.proxyMu.Lock()
-	defer m.proxyMu.Unlock()
-
-	if m.proxyListener != nil {
-		return fmt.Errorf("proxy server already running")
-	}
-
-	m.proxyPort = port
-	m.proxyRoutes = make(map[string]int32)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		proxyhandler.HandleProxyRequest(m.proxyRoutes, &m.proxyMu, w, r)
-	})
-
-	m.proxyServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
-	}
-
-	listener, err := net.Listen("tcp", m.proxyServer.Addr)
-	if err != nil {
-		return fmt.Errorf("listen on port %d: %w", port, err)
-	}
-
-	m.proxyListener = listener
-
-	go func() {
-		if err := m.proxyServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("proxy server error: %v\n", err)
-		}
-	}()
-
-	return nil
-}
-
-func (m *DnsManager) StopProxyServer() error {
-	m.proxyMu.Lock()
-	defer m.proxyMu.Unlock()
-
-	if m.proxyServer == nil {
-		return nil
-	}
-
-	if m.proxyListener != nil {
-		if err := m.proxyListener.Close(); err != nil {
-			return fmt.Errorf("close listener: %w", err)
-		}
-	}
-
-	if err := m.proxyServer.Close(); err != nil {
-		return fmt.Errorf("close server: %w", err)
-	}
-
-	m.proxyListener = nil
-	m.proxyServer = nil
-	m.proxyRoutes = make(map[string]int32)
-
-	return nil
-}
-
-func (m *DnsManager) IsProxyRunning() bool {
-	m.proxyMu.RLock()
-	defer m.proxyMu.RUnlock()
-	return m.proxyListener != nil
-}
-
-func (m *DnsManager) GetProxyRoutes() map[string]int32 {
-	m.proxyMu.RLock()
-	defer m.proxyMu.RUnlock()
-
-	result := make(map[string]int32)
-	for k, v := range m.proxyRoutes {
-		result[k] = v
-	}
-	return result
-}
-
-func (m *DnsManager) AddProxyRoute(host string, localPort int32) {
-	m.proxyMu.Lock()
-	defer m.proxyMu.Unlock()
-	m.proxyRoutes[host] = localPort
-}
-
-func (m *DnsManager) RemoveProxyRoute(host string) {
-	m.proxyMu.Lock()
-	defer m.proxyMu.Unlock()
-	delete(m.proxyRoutes, host)
-}
-
-func (m *DnsManager) StopAllPortForwards() {
-	m.forwardsMu.Lock()
-	defer m.forwardsMu.Unlock()
-
-	for _, forward := range m.forwards {
-		close(forward.StopCh)
-	}
-	m.forwards = make(map[string]*portforward.PortForward)
-}
-
-func FindContextIndex(contexts []k8s.Context, selectedContext string) int {
-	for i, ctx := range contexts {
-		if ctx.Name == selectedContext {
-			return i
-		}
-	}
-	return -1
-}
-

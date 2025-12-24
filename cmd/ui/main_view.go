@@ -8,13 +8,13 @@ import (
 )
 
 func (a *App) handleServiceSelection(mainView *tview.Table) {
-	selectedNamespace := a.manager.GetSelectedNamespace()
+	selectedNamespace := a.uiRenderer.GetSelectedNamespace()
 	if selectedNamespace == "" {
 		a.setErrorCell("Please select a namespace first")
 		return
 	}
 
-	services := a.manager.GetServices()
+	services := a.uiRenderer.GetServices()
 	if len(services) == 0 {
 		a.setErrorCell("No services found in selected namespace")
 		return
@@ -33,14 +33,14 @@ func (a *App) handleServiceSelection(mainView *tview.Table) {
 	}
 
 	svc := services[serviceIndex]
-	if err := a.manager.RegisterServicePortForward(svc.Name, svc.Namespace); err != nil {
+	contextName := a.uiRenderer.GetSelectedContext()
+	if err := a.manager.RegisterDNSTunnel(contextName, svc.Name, svc.Namespace); err != nil {
 		a.setErrorCell(fmt.Sprintf("Port forwarding failed: %v", err))
 	} else {
 		a.updateDNSView()
 		a.setPlaceholderCell(fmt.Sprintf("Port forwarding started: %s.%s", svc.Name, svc.Namespace))
 	}
 }
-
 
 func renderMainView(a *App) *tview.Table {
 	mainView := tview.NewTable()
@@ -64,11 +64,10 @@ func renderMainView(a *App) *tview.Table {
 		}
 		return event
 	})
-	
+
 	mainView.SetFocusFunc(func() {
 		a.updateHelpForFocus()
 	})
 
 	return mainView
 }
-
