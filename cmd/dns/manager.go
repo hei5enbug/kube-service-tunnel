@@ -2,6 +2,8 @@ package dns
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/byoungmin/kube-service-tunnel/internal/host"
 	"github.com/byoungmin/kube-service-tunnel/internal/kube"
@@ -23,6 +25,7 @@ type DNSManager struct {
 	hostsFileAdapter host.HostsFileAdapterInterface
 	proxyAdapter     proxyadapter.ProxyAdapterInterface
 	dnsTunnels       []DNSTunnel
+	mu               sync.RWMutex
 }
 
 func NewDNSManager(kubeconfigPath string) (*DNSManager, error) {
@@ -36,14 +39,18 @@ func NewDNSManager(kubeconfigPath string) (*DNSManager, error) {
 		kubeAdapter:      kubeAdapter,
 		hostsFileAdapter: host.NewHostsFileAdapter(),
 		proxyAdapter:     proxyadapter.NewProxyAdapter(),
-		dnsTunnels:       []DNSTunnel{},
 	}
 
 	return dnsManager, nil
 }
 
 func (m *DNSManager) GetAllDNSTunnels() []DNSTunnel {
-	return m.dnsTunnels
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]DNSTunnel, len(m.dnsTunnels))
+	copy(result, m.dnsTunnels)
+	return result
 }
 
 func (m *DNSManager) RegisterAllByContext(contextName string) error {
@@ -51,7 +58,7 @@ func (m *DNSManager) RegisterAllByContext(contextName string) error {
 		return fmt.Errorf("context name is required")
 	}
 
-	usedPorts := extractUsedPorts(m.dnsTunnels)
+	usedPorts := m.getUsedPorts()
 
 	tunnels, err := m.kubeAdapter.RegisterAllServicesForContext(contextName, usedPorts)
 	if err != nil {
@@ -62,16 +69,26 @@ func (m *DNSManager) RegisterAllByContext(contextName string) error {
 		return fmt.Errorf("start proxy server: %w", err)
 	}
 
-	routes := make(map[string]int32)
+	routes := make(map[string]int32, len(tunnels))
+	dnsTunnels := make([]DNSTunnel, 0, len(tunnels))
 	for _, tunnel := range tunnels {
-		m.dnsTunnels = append(m.dnsTunnels, convertToDNSTunnel(tunnel))
+		dnsTunnels = append(dnsTunnels, convertToDNSTunnel(tunnel))
 		routes[tunnel.DNSURL] = tunnel.LocalPort
 	}
 
+	m.addTunnels(dnsTunnels)
 	m.proxyAdapter.AddRoutes(routes)
 
-	for _, tunnel := range tunnels {
+	for i, tunnel := range tunnels {
 		if err := m.hostsFileAdapter.AddEntry(tunnel.DNSURL); err != nil {
+			for j := 0; j < i; j++ {
+				m.hostsFileAdapter.RemoveEntry(tunnels[j].DNSURL)
+			}
+			for _, dnsTunnel := range dnsTunnels {
+				m.removeTunnel(dnsTunnel.DNSURL)
+				m.proxyAdapter.RemoveRoute(dnsTunnel.DNSURL)
+				m.kubeAdapter.UnregisterServicePortForward(dnsTunnel.Context, dnsTunnel.Namespace, dnsTunnel.Pod, dnsTunnel.RemotePort)
+			}
 			return fmt.Errorf("add hosts entry: %w", err)
 		}
 	}
@@ -84,7 +101,7 @@ func (m *DNSManager) RegisterDNSTunnel(contextName, serviceName, namespace strin
 		return fmt.Errorf("context name, service name and namespace are required")
 	}
 
-	usedPorts := extractUsedPorts(m.dnsTunnels)
+	usedPorts := m.getUsedPorts()
 
 	tunnel, err := m.kubeAdapter.RegisterServicePortForward(contextName, serviceName, namespace, usedPorts)
 	if err != nil {
@@ -92,14 +109,18 @@ func (m *DNSManager) RegisterDNSTunnel(contextName, serviceName, namespace strin
 	}
 
 	if err := m.proxyAdapter.StartIfNotRunning(80); err != nil {
+		m.kubeAdapter.UnregisterServicePortForward(tunnel.Context, tunnel.Namespace, tunnel.Pod, tunnel.RemotePort)
 		return fmt.Errorf("start proxy server: %w", err)
 	}
 
 	m.proxyAdapter.AddRoute(tunnel.DNSURL, tunnel.LocalPort)
 
-	m.dnsTunnels = append(m.dnsTunnels, convertToDNSTunnel(tunnel))
+	m.addTunnels([]DNSTunnel{convertToDNSTunnel(tunnel)})
 
 	if err := m.hostsFileAdapter.AddEntry(tunnel.DNSURL); err != nil {
+		m.removeTunnel(tunnel.DNSURL)
+		m.proxyAdapter.RemoveRoute(tunnel.DNSURL)
+		m.kubeAdapter.UnregisterServicePortForward(tunnel.Context, tunnel.Namespace, tunnel.Pod, tunnel.RemotePort)
 		return fmt.Errorf("add hosts entry: %w", err)
 	}
 
@@ -111,28 +132,23 @@ func (m *DNSManager) UnregisterDNSTunnel(dnsURL string) error {
 		return fmt.Errorf("DNS URL is required")
 	}
 
-	index := -1
-	var tunnel DNSTunnel
-	for i, t := range m.dnsTunnels {
-		if t.DNSURL == dnsURL {
-			index = i
-			tunnel = t
-			break
-		}
-	}
-	if index == -1 {
+	tunnel, found := m.removeTunnel(dnsURL)
+	if !found {
 		return fmt.Errorf("tunnel not found for DNS URL: %s", dnsURL)
 	}
 
 	if err := m.kubeAdapter.UnregisterServicePortForward(tunnel.Context, tunnel.Namespace, tunnel.Pod, tunnel.RemotePort); err != nil {
-		return fmt.Errorf("stop port forward: %w", err)
+		if !strings.Contains(err.Error(), "port forward not found") {
+			m.addTunnels([]DNSTunnel{tunnel})
+			return fmt.Errorf("stop port forward: %w", err)
+		}
 	}
 
 	m.proxyAdapter.RemoveRoute(dnsURL)
 
-	m.dnsTunnels = append(m.dnsTunnels[:index], m.dnsTunnels[index+1:]...)
-
 	if err := m.hostsFileAdapter.RemoveEntry(dnsURL); err != nil {
+		m.addTunnels([]DNSTunnel{tunnel})
+		m.proxyAdapter.AddRoute(tunnel.DNSURL, tunnel.LocalPort)
 		return fmt.Errorf("remove hosts entry: %w", err)
 	}
 
@@ -150,16 +166,40 @@ func (m *DNSManager) Cleanup() error {
 		return fmt.Errorf("clear hosts file entries: %w", err)
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.dnsTunnels = []DNSTunnel{}
 	return nil
 }
 
-func extractUsedPorts(tunnels []DNSTunnel) map[int32]bool {
-	usedPorts := make(map[int32]bool)
-	for _, t := range tunnels {
+func (m *DNSManager) getUsedPorts() map[int32]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	usedPorts := make(map[int32]bool, len(m.dnsTunnels))
+	for _, t := range m.dnsTunnels {
 		usedPorts[t.LocalPort] = true
 	}
 	return usedPorts
+}
+
+func (m *DNSManager) addTunnels(tunnels []DNSTunnel) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dnsTunnels = append(m.dnsTunnels, tunnels...)
+}
+
+func (m *DNSManager) removeTunnel(dnsURL string) (DNSTunnel, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i, t := range m.dnsTunnels {
+		if t.DNSURL == dnsURL {
+			m.dnsTunnels = append(m.dnsTunnels[:i], m.dnsTunnels[i+1:]...)
+			return t, true
+		}
+	}
+	return DNSTunnel{}, false
 }
 
 func convertToDNSTunnel(tunnel kube.ServiceTunnel) DNSTunnel {

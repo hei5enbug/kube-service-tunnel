@@ -11,11 +11,8 @@ import (
 )
 
 type ProxyAdapterInterface interface {
-	Start(port int32) error
 	StartIfNotRunning(port int32) error
 	Stop() error
-	IsRunning() bool
-	GetRoutes() map[string]int32
 	AddRoute(host string, localPort int32)
 	AddRoutes(routes map[string]int32)
 	RemoveRoute(host string)
@@ -35,7 +32,15 @@ func NewProxyAdapter() ProxyAdapterInterface {
 	}
 }
 
-func (p *proxyAdapter) Start(port int32) error {
+func (p *proxyAdapter) StartIfNotRunning(port int32) error {
+	err := p.start(port)
+	if err != nil && err.Error() == "proxy server already running" {
+		return nil
+	}
+	return err
+}
+
+func (p *proxyAdapter) start(port int32) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -72,13 +77,6 @@ func (p *proxyAdapter) Start(port int32) error {
 	return nil
 }
 
-func (p *proxyAdapter) StartIfNotRunning(port int32) error {
-	if p.IsRunning() {
-		return nil
-	}
-	return p.Start(port)
-}
-
 func (p *proxyAdapter) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -104,27 +102,8 @@ func (p *proxyAdapter) Stop() error {
 	return nil
 }
 
-func (p *proxyAdapter) IsRunning() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.listener != nil
-}
-
-func (p *proxyAdapter) GetRoutes() map[string]int32 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	result := make(map[string]int32)
-	for k, v := range p.routes {
-		result[k] = v
-	}
-	return result
-}
-
 func (p *proxyAdapter) AddRoute(host string, localPort int32) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.routes[host] = localPort
+	p.AddRoutes(map[string]int32{host: localPort})
 }
 
 func (p *proxyAdapter) AddRoutes(routes map[string]int32) {

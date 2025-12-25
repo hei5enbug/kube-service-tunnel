@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -15,12 +16,12 @@ import (
 type PortForwardClientInterface interface {
 	StartPortForward(contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) error
 	StopPortForward(key string) error
-	GetActiveForwards() map[string]*PortForward
 	StopAllPortForwards()
 }
 
 type portForwardClient struct {
 	forwards map[string]*PortForward
+	mu       sync.RWMutex
 }
 
 type PortForward struct {
@@ -31,8 +32,6 @@ type PortForward struct {
 	LocalPort  int32
 	RemotePort int32
 	StopCh     chan struct{}
-	ReadyCh    chan struct{}
-	ErrorCh    chan error
 }
 
 func NewPortForwardClient() PortForwardClientInterface {
@@ -41,10 +40,16 @@ func NewPortForwardClient() PortForwardClientInterface {
 	}
 }
 
-func (p *portForwardClient) StartPortForward(contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) error {
-	key := fmt.Sprintf("%s:%s:%s:%d", contextName, namespace, pod, remotePort)
+func BuildPortForwardKey(contextName, namespace, pod string, remotePort int32) string {
+	return fmt.Sprintf("%s:%s:%s:%d", contextName, namespace, pod, remotePort)
+}
 
+func (p *portForwardClient) StartPortForward(contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) error {
+	key := BuildPortForwardKey(contextName, namespace, pod, remotePort)
+
+	p.mu.Lock()
 	if _, exists := p.forwards[key]; exists {
+		p.mu.Unlock()
 		return fmt.Errorf("port forward already exists: %s", key)
 	}
 
@@ -60,11 +65,10 @@ func (p *portForwardClient) StartPortForward(contextName, namespace, pod string,
 		LocalPort:  localPort,
 		RemotePort: remotePort,
 		StopCh:     stopCh,
-		ReadyCh:    readyCh,
-		ErrorCh:    errorCh,
 	}
 
 	p.forwards[key] = forward
+	p.mu.Unlock()
 
 	go startPortForwardGoroutine(config, clientset, namespace, pod, localPort, remotePort, stopCh, readyCh, errorCh)
 
@@ -72,41 +76,63 @@ func (p *portForwardClient) StartPortForward(contextName, namespace, pod string,
 	case <-readyCh:
 		return nil
 	case err := <-errorCh:
+		p.mu.Lock()
+		defer p.mu.Unlock()
 		delete(p.forwards, key)
 		return err
 	}
 }
 
 func (p *portForwardClient) StopPortForward(key string) error {
+	p.mu.Lock()
 	forward, exists := p.forwards[key]
 	if !exists {
+		p.mu.Unlock()
 		return fmt.Errorf("port forward not found: %s", key)
 	}
-
-	close(forward.StopCh)
 	delete(p.forwards, key)
+	p.mu.Unlock()
+
+	safeCloseChannel(forward.StopCh)
 	return nil
 }
 
-func (p *portForwardClient) GetActiveForwards() map[string]*PortForward {
-	result := make(map[string]*PortForward)
-	for k, v := range p.forwards {
-		result[k] = v
-	}
-	return result
-}
-
 func (p *portForwardClient) StopAllPortForwards() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	forwards := make([]*PortForward, 0, len(p.forwards))
 	for _, forward := range p.forwards {
-		close(forward.StopCh)
+		forwards = append(forwards, forward)
 	}
 	p.forwards = make(map[string]*PortForward)
+
+	for _, forward := range forwards {
+		safeCloseChannel(forward.StopCh)
+	}
+}
+
+func safeCloseChannel(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+func safeCloseErrorChannel(ch chan error) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
 }
 
 func startPortForwardGoroutine(config *rest.Config, clientset kubernetes.Interface, namespace, pod string, localPort, remotePort int32, stopCh, readyCh chan struct{}, errorCh chan error) {
-	defer close(stopCh)
-	defer close(readyCh)
-	defer close(errorCh)
+	defer func() {
+		safeCloseChannel(readyCh)
+		safeCloseErrorChannel(errorCh)
+	}()
 
 	reqURL := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
@@ -122,9 +148,7 @@ func startPortForwardGoroutine(config *rest.Config, clientset kubernetes.Interfa
 
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", reqURL)
 
-	ports := []string{
-		fmt.Sprintf("%d:%d", localPort, remotePort),
-	}
+	ports := []string{fmt.Sprintf("%d:%d", localPort, remotePort)}
 
 	pf, err := portforward.New(dialer, ports, stopCh, readyCh, io.Discard, io.Discard)
 	if err != nil {
@@ -152,7 +176,7 @@ func findAvailablePort(startPort int32, usedPorts map[int32]bool) (int32, error)
 		if err != nil {
 			continue
 		}
-		addr.Close()
+		defer addr.Close()
 		return port, nil
 	}
 

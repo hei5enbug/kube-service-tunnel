@@ -248,6 +248,6 @@ func (m *kubeAdapter) RegisterServicePortForward(contextName, serviceName, names
 }
 
 func (m *kubeAdapter) UnregisterServicePortForward(contextName, namespace, pod string, remotePort int32) error {
-	key := fmt.Sprintf("%s:%s:%s:%d", contextName, namespace, pod, remotePort)
+	key := BuildPortForwardKey(contextName, namespace, pod, remotePort)
 	return m.portForwardClient.StopPortForward(key)
 }
