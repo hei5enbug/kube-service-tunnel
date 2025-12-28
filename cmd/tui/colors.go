@@ -35,3 +35,8 @@ func parseHexColor(hex string) tcell.Color {
 
 	return tcell.NewRGBColor(r, g, b)
 }
+
+func colorToHex(color tcell.Color) string {
+	r, g, b := color.RGB()
+	return fmt.Sprintf("#%02x%02x%02x", r, g, b)
+}

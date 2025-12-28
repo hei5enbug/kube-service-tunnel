@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
+	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
 	"github.com/byoungmin/kube-service-tunnel/internal/kube"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -17,6 +18,7 @@ import (
 var backgroundColor = tcell.NewRGBColor(0, 0, 0)
 var textColor = tcell.ColorWhite
 var focusedBorderColor = tcell.ColorGreen
+var systemColor = tcell.NewRGBColor(255, 255, 0)
 
 type App struct {
 	app           *tview.Application
@@ -29,19 +31,13 @@ type App struct {
 	messageView   *tview.TextView
 	root          *tview.Flex
 	pages         *tview.Pages
-	manager       dns.DNSManagerInterface
 
-	kubeAdapter       kube.KubeAdapterInterface
-	selectedContext   string
-	selectedNamespace string
-	contexts          []kube.Context
-	namespaces        []string
-	services          []kube.Service
+	store       *store.Store
+	manager     dns.DNSManagerInterface
+	kubeAdapter kube.KubeAdapterInterface
 
 	ctx    context.Context
 	cancel context.CancelFunc
-
-	isLoading bool
 }
 
 func Run(kubeconfigPath string) error {
@@ -73,104 +69,140 @@ func Run(kubeconfigPath string) error {
 		kubeAdapter: kubeAdapter,
 		ctx:         ctx,
 		cancel:      cancel,
-	}
-
-	initialCtx, initialCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer initialCancel()
-
-	contexts, err := kubeAdapter.ListContexts(initialCtx)
-	if err != nil {
-		return fmt.Errorf("list contexts: %w", err)
-	}
-	app.contexts = contexts
-	if len(contexts) > 0 {
-		app.selectedContext = contexts[0].Name
+		store:       store.NewStore(),
 	}
 
 	app.setupUI()
-	app.app.SetRoot(app.pages, true).SetFocus(app.contextList)
+	app.app.SetRoot(app.pages, true)
+	app.app.SetFocus(nil)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigChan
-		app.cancel()
-		app.manager.Cleanup()
-		app.app.Stop()
-		os.Exit(0)
+		app.Quit()
 	}()
 
-	defer func() {
-		if r := recover(); r != nil {
-			app.cancel()
-			app.manager.Cleanup()
-			panic(r)
-		}
-		app.cancel()
-		app.manager.Cleanup()
+	app.app.SetInputCapture(app.handleGlobalInput)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		app.fetchAllResources()
 	}()
 
-	app.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if app.isLoading {
-			if event.Key() == tcell.KeyCtrlC {
-				app.cancel()
-				app.manager.Cleanup()
-				app.app.Stop()
-				os.Exit(0)
-			}
-			return nil
-		}
-		if event.Key() == tcell.KeyCtrlC {
-			app.cancel()
-			app.manager.Cleanup()
-			app.app.Stop()
-			os.Exit(0)
-		}
-		if event.Key() == tcell.KeyCtrlB {
-			app.showColorInputModal("Background Color", app.changeBackgroundColor)
-			return nil
-		}
-		if event.Key() == tcell.KeyCtrlT {
-			app.showColorInputModal("Text Color", app.changeTextColor)
-			return nil
-		}
-		return event
-	})
-
-	runErr := app.app.Run()
-	app.cancel()
-	app.manager.Cleanup()
-	return runErr
+	return app.app.Run()
 }
 
-func (a *App) setupUI() {
-	a.messageView = a.RenderMessageView()
-	a.helpView = a.RenderHelpView()
-	a.contextList = a.RenderContextView()
-	a.namespaceView = a.RenderNamespaceView()
-	a.mainView = a.RenderServiceView()
-	a.dnsView = a.RenderTunnelView()
-	a.header = a.RenderHeader()
+func (app *App) Quit() {
+	app.cancel()
+	app.manager.Cleanup()
+	app.app.Stop()
+}
+
+func (app *App) setupUI() {
+	app.messageView = app.RenderMessageView()
+	app.helpView = app.RenderHelpView()
+	app.contextList = app.RenderContextView()
+	app.namespaceView = app.RenderNamespaceView()
+	app.mainView = app.RenderServiceView()
+	app.dnsView = app.RenderTunnelView()
+	app.header = app.RenderHeader()
 
 	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(a.header, 0, 2, false).
+		AddItem(app.header, 0, 2, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexColumn).
-			AddItem(a.namespaceView, 0, 1, true).
-			AddItem(a.mainView, 0, 2, false).
-			AddItem(a.dnsView, 0, 2, false), 0, 4, true)
+			AddItem(app.namespaceView, 0, 1, true).
+			AddItem(app.mainView, 0, 2, false).
+			AddItem(app.dnsView, 0, 2, false), 0, 4, true)
 
-	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
+	app.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(mainFlex, 0, 1, true)
-	a.root.SetBackgroundColor(backgroundColor)
+	app.root.SetBackgroundColor(backgroundColor)
 
-	a.pages = tview.NewPages().
-		AddPage("main", a.root, true, true)
+	app.pages = tview.NewPages().
+		AddPage("main", app.root, true, true)
 
-	if err := a.RefreshNamespaces(); err != nil {
-		a.SetMessage(fmt.Sprintf("Error loading namespaces: %v", err))
-	} else {
-		a.UpdateNamespaceView()
+	app.UpdateDNSView()
+	app.UpdateContextList()
+	app.SetupLoadingSubscription()
+	app.SetupFocusSubscription()
+}
+
+func (app *App) SetupFocusSubscription() {
+	var prevState store.State
+	app.store.Subscribe(func(s store.State) {
+		defer func() { prevState = s }()
+
+		focusChanged := s.Focus != prevState.Focus
+
+		if focusChanged {
+			if s.Focus == "" {
+				app.app.QueueUpdateDraw(func() {
+					app.app.SetFocus(nil)
+				})
+			} else {
+				target := app.getWidgetForFocus(s.Focus)
+				if target != nil && app.app.GetFocus() != target {
+					app.app.QueueUpdateDraw(func() {
+						app.app.SetFocus(target)
+					})
+				} else if target == nil {
+					app.app.QueueUpdateDraw(func() {
+						app.app.SetFocus(nil)
+					})
+				}
+			}
+		}
+	})
+}
+
+func (app *App) getWidgetForFocus(focus store.FocusArea) tview.Primitive {
+	switch focus {
+	case store.FocusContexts:
+		return app.contextList
+	case store.FocusNamespaces:
+		return app.namespaceView
+	case store.FocusServices:
+		return app.mainView
+	case store.FocusTunnels:
+		return app.dnsView
+	default:
+		return nil
 	}
-	a.UpdateDNSView()
-	a.UpdateContextList()
+}
+
+func (app *App) fetchAllResources() {
+	app.store.SetLoading(true)
+
+	resourceMap, err := app.kubeAdapter.FetchAllResources(app.ctx)
+	if err != nil {
+		app.store.SetLoading(false)
+		app.store.SetMessage(fmt.Sprintf("Error fetching resources: %v", err))
+		return
+	}
+
+	app.store.SetAllResources(resourceMap)
+	app.store.SetLoading(false)
+	app.store.SetFocus(store.FocusContexts)
+	app.store.SetMessage("All resources loaded and cached")
+}
+
+func (app *App) handleGlobalInput(event *tcell.EventKey) *tcell.EventKey {
+	state := app.store.GetState()
+	if state.IsLoading {
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlC {
+		app.Quit()
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlB {
+		app.showColorInputModal("Background Color", app.changeBackgroundColor)
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlT {
+		app.showColorInputModal("Text Color", app.changeTextColor)
+		return nil
+	}
+	return event
 }

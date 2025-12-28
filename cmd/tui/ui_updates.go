@@ -1,10 +1,7 @@
 package tui
 
 import (
-	"context"
-	"fmt"
-	"time"
-
+	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
 	"github.com/byoungmin/kube-service-tunnel/internal/kube"
 	"github.com/rivo/tview"
 )
@@ -22,16 +19,6 @@ func findNamespaceIndex(namespaces []string, selectedNamespace string) int {
 		}
 	}
 	return -1
-}
-
-func isSystemNamespace(namespace string) bool {
-	systemNamespaces := []string{"kube-system", "kube-public", "kube-node-lease"}
-	for _, sysNs := range systemNamespaces {
-		if namespace == sysNs {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *App) ApplyViewStyles(view interface{}) {
@@ -179,6 +166,7 @@ func (a *App) UpdateHeader() {
 	if titleView, ok := a.header.GetItem(0).(*tview.TextView); ok {
 		titleView.SetText(titleText)
 		a.ApplyViewStyles(titleView)
+		titleView.SetTextColor(systemColor)
 	}
 }
 
@@ -216,7 +204,7 @@ func (a *App) UpdateHelpView() {
 	}
 	a.ApplyViewStyles(a.helpView)
 	if a.app != nil {
-		a.UpdateHelpForFocus()
+		a.UpdateHelpForFocus(a.store.GetState().Focus)
 	}
 }
 
@@ -225,6 +213,9 @@ func (a *App) UpdateMessageView() {
 		return
 	}
 	a.ApplyViewStyles(a.messageView)
+	a.messageView.SetBorderColor(systemColor)
+	a.messageView.SetTitleColor(systemColor)
+	a.messageView.SetTextColor(systemColor)
 
 	currentText := a.messageView.GetText(true)
 	a.messageView.SetText(currentText)
@@ -253,18 +244,17 @@ func (a *App) SetMessage(message string) {
 	}
 }
 
-func (a *App) UpdateHelpForFocus() {
-	focus := a.app.GetFocus()
+func (a *App) UpdateHelpForFocus(focus store.FocusArea) {
 	var focusType string
 
 	switch focus {
-	case a.contextList:
+	case store.FocusContexts:
 		focusType = "context"
-	case a.namespaceView:
+	case store.FocusNamespaces:
 		focusType = "namespace"
-	case a.mainView:
+	case store.FocusServices:
 		focusType = "services"
-	case a.dnsView:
+	case store.FocusTunnels:
 		focusType = "tunnel"
 	default:
 		focusType = "default"
@@ -274,79 +264,31 @@ func (a *App) UpdateHelpForFocus() {
 }
 
 func (a *App) GetContexts() []kube.Context {
-	return a.contexts
+	return a.store.GetState().Contexts
 }
 
 func (a *App) GetSelectedContext() string {
-	return a.selectedContext
+	return a.store.GetState().SelectedContext
 }
 
 func (a *App) GetNamespaces() []string {
-	return a.namespaces
+	return a.store.GetState().Namespaces
 }
 
 func (a *App) GetSelectedNamespace() string {
-	return a.selectedNamespace
+	return a.store.GetState().SelectedNamespace
 }
 
 func (a *App) GetServices() []kube.Service {
-	return a.services
-}
-
-func (a *App) RefreshNamespaces() error {
-	if a.selectedContext == "" {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
-	defer cancel()
-
-	allNamespaces, err := a.kubeAdapter.ListNamespaces(ctx, a.selectedContext)
-	if err != nil {
-		return fmt.Errorf("list namespaces: %w", err)
-	}
-
-	var namespacesWithServices []string
-	for _, ns := range allNamespaces {
-		if isSystemNamespace(ns) {
-			continue
-		}
-		services, err := a.kubeAdapter.ListServices(ctx, ns, a.selectedContext)
-		if err != nil {
-			continue
-		}
-		if len(services) > 0 {
-			namespacesWithServices = append(namespacesWithServices, ns)
-		}
-	}
-
-	a.namespaces = namespacesWithServices
-	return nil
+	return a.store.GetState().Services
 }
 
 func (a *App) SetSelectedContext(contextName string) error {
-	a.selectedContext = contextName
-	a.selectedNamespace = ""
-	a.services = nil
-	return a.RefreshNamespaces()
+	a.store.SetSelectedContextWithResources(contextName)
+	return nil
 }
 
 func (a *App) SetSelectedNamespace(namespace string) error {
-	a.selectedNamespace = namespace
-
-	if a.selectedContext == "" || a.selectedNamespace == "" {
-		a.services = nil
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
-	defer cancel()
-
-	services, err := a.kubeAdapter.ListServices(ctx, a.selectedNamespace, a.selectedContext)
-	if err != nil {
-		return fmt.Errorf("list services: %w", err)
-	}
-
-	a.services = services
+	a.store.SetSelectedNamespace(namespace)
 	return nil
 }

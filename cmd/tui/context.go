@@ -2,8 +2,11 @@ package tui
 
 import (
 	"fmt"
-	"time"
+	"reflect"
+	"sync"
 
+	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
+	"github.com/byoungmin/kube-service-tunnel/internal/kube"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -16,110 +19,104 @@ func (a *App) RenderContextView() *tview.Table {
 		SetBorder(true)
 	a.ApplyViewStyles(contextList)
 
-	contextList.SetSelectedFunc(func(row, column int) {
-		go func() {
-			contexts := a.GetContexts()
-			if row < 0 || row >= len(contexts) {
-				return
-			}
-			contextName := contexts[row].Name
+	contextList.SetSelectedFunc(a.onContextSelected)
+	contextList.SetInputCapture(a.handleContextInput)
+	contextList.SetFocusFunc(a.onContextFocus)
+	contextList.SetBlurFunc(a.onContextBlur)
 
+	var prevState store.State
+	var mu sync.Mutex
+	a.store.Subscribe(func(s store.State) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !reflect.DeepEqual(prevState.Contexts, s.Contexts) || prevState.SelectedContext != s.SelectedContext {
 			a.app.QueueUpdateDraw(func() {
-				a.SetMessage(fmt.Sprintf("Loading context: %s...", contextName))
+				a.UpdateContextList()
 			})
-
-			err := a.SetSelectedContext(contextName)
-
-			a.app.QueueUpdateDraw(func() {
-				if err != nil {
-					a.SetMessage(fmt.Sprintf("Error loading namespaces: %v", err))
-				} else {
-					a.InitMainView()
-					a.SetMessage(fmt.Sprintf("Context selected: %s", contextName))
-					a.UpdateNamespaceView()
-					a.UpdateContextList()
-					a.UpdateMainView()
-				}
-			})
-		}()
-	})
-
-	contextList.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyTab:
-			a.app.SetFocus(a.namespaceView)
-			return nil
-		case tcell.KeyCtrlP:
-			selectedIndex, _ := contextList.GetSelection()
-			go func() {
-				c, err := a.kubeAdapter.ListContexts(a.ctx)
-				if err != nil || selectedIndex < 0 || selectedIndex >= len(c) {
-					return
-				}
-				contextName := c[selectedIndex].Name
-
-				a.app.QueueUpdateDraw(func() {
-					if a.isLoading {
-						return
-					}
-
-					a.isLoading = true
-					loadingDone := make(chan bool)
-					loadingDots := []string{".", "..", "...", "...."}
-					idx := 0
-
-					go func() {
-						ticker := time.NewTicker(500 * time.Millisecond)
-						defer ticker.Stop()
-						for {
-							select {
-							case <-loadingDone:
-								return
-							case <-ticker.C:
-								loadingText := "Loading" + loadingDots[idx%len(loadingDots)]
-								a.app.QueueUpdateDraw(func() {
-									a.SetMessage(loadingText)
-								})
-								idx++
-							case <-a.ctx.Done():
-								return
-							}
-						}
-					}()
-
-					go func() {
-						defer func() {
-							close(loadingDone)
-							a.app.QueueUpdateDraw(func() {
-								a.isLoading = false
-							})
-						}()
-						if err := a.manager.RegisterAllByContext(contextName); err != nil {
-							a.app.QueueUpdateDraw(func() {
-								a.SetMessage(fmt.Sprintf("Failed to register all services: %v", err))
-							})
-						} else {
-							a.app.QueueUpdateDraw(func() {
-								a.UpdateDNSView()
-								a.SetMessage(fmt.Sprintf("All services registered for context: %s", contextName))
-							})
-						}
-					}()
-				})
-			}()
-			return nil
 		}
-		return event
-	})
-
-	contextList.SetFocusFunc(func() {
-		contextList.SetBorderColor(tcell.ColorGreen)
-		a.UpdateHelpForFocus()
-	})
-
-	contextList.SetBlurFunc(func() {
-		contextList.SetBorderColor(tcell.ColorWhite)
+		prevState = s
 	})
 
 	return contextList
+}
+
+func (a *App) onContextSelected(row, column int) {
+	go func() {
+		state := a.store.GetState()
+		if state.IsLoading {
+			return
+		}
+
+		contexts := a.GetContexts()
+		if row < 0 || row >= len(contexts) {
+			return
+		}
+		contextName := contexts[row].Name
+
+		if err := a.SetSelectedContext(contextName); err != nil {
+			a.store.SetMessage(fmt.Sprintf("Error selecting context: %v", err))
+		} else {
+			a.store.SetMessage(fmt.Sprintf("Context selected: %s", contextName))
+		}
+	}()
+}
+
+func (a *App) handleContextInput(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Key() {
+	case tcell.KeyTab:
+		go a.store.SetFocus(store.FocusNamespaces)
+		return nil
+	case tcell.KeyBacktab:
+		go a.store.SetFocus(store.FocusTunnels)
+		return nil
+	case tcell.KeyEnter:
+		if event.Modifiers() == tcell.ModShift {
+			a.handleRegisterAllServices()
+			return nil
+		}
+	case tcell.KeyCtrlP:
+		a.handleRegisterAllServices()
+		return nil
+	}
+	return event
+}
+
+func (a *App) handleRegisterAllServices() {
+	go func() {
+		state := a.store.GetState()
+		if state.SelectedContext == "" {
+			return
+		}
+		contextName := state.SelectedContext
+
+		if state.IsLoading {
+			return
+		}
+
+		resourceMap := state.ResourceMap[contextName]
+		var allServices []kube.Service
+		for _, services := range resourceMap {
+			allServices = append(allServices, services...)
+		}
+
+		a.store.SetLoading(true)
+		defer a.store.SetLoading(false)
+
+		if err := a.manager.RegisterAllByContext(contextName, allServices); err != nil {
+			a.store.SetMessage(fmt.Sprintf("Failed to register all services: %v", err))
+		} else {
+			a.app.QueueUpdateDraw(func() {
+				a.UpdateDNSView()
+			})
+			a.store.SetMessage(fmt.Sprintf("All services registered for context: %s", contextName))
+		}
+	}()
+}
+
+func (a *App) onContextFocus() {
+	a.contextList.SetBorderColor(tcell.ColorGreen)
+}
+
+func (a *App) onContextBlur() {
+	a.contextList.SetBorderColor(tcell.ColorWhite)
 }

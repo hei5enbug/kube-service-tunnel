@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
 	"github.com/rivo/tview"
 )
 
@@ -14,6 +15,16 @@ func (a *App) RenderHelpView() *tview.TextView {
 	a.ApplyViewStyles(helpView)
 
 	UpdateHelpText(helpView, "context")
+
+	var prevState store.State
+	a.store.Subscribe(func(s store.State) {
+		if s.Focus != prevState.Focus {
+			a.app.QueueUpdateDraw(func() {
+				a.UpdateHelpForFocus(s.Focus)
+			})
+		}
+		prevState = s
+	})
 
 	return helpView
 }

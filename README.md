@@ -23,14 +23,6 @@ brew install --cask kube-service-tunnel
 
 Download the latest release from [GitHub Releases](https://github.com/hei5enbug/kube-service-tunnel/releases) and extract the binary to your PATH.
 
-### Building from Source
-
-```bash
-git clone https://github.com/hei5enbug/kube-service-tunnel.git
-cd kube-service-tunnel
-go build -o bin/kube-service-tunnel ./cmd
-sudo mv bin/kube-service-tunnel /usr/local/bin/
-```
 
 ## Usage
 
@@ -43,8 +35,6 @@ sudo kube-service-tunnel
 ### Command Line Options
 
 - `--kubeconfig`: Path to kubeconfig file (default: ~/.kube/config)
-- `--bg-color`: Background color (e.g., black, white, blue, or #000000). Default: black
-- `--text-color`: Text color (e.g., black, white, blue, or #ffffff). Default: white
 
 ## Key Bindings
 
@@ -52,7 +42,9 @@ sudo kube-service-tunnel
 - **Shift+Tab**: Navigate to previous window
 - **Enter**: Select context/namespace/service or register port forward
 - **Ctrl+P**: Register all services in selected context (Context window)
-- **Delete**: Delete port forward (Port Forwarding window)
+- **Delete**: Delete port forward (Local DNS Tunnels window)
+- **Ctrl+B**: Change background color
+- **Ctrl+T**: Change text color
 - **Ctrl+C**: Exit application
 
 ## Requirements

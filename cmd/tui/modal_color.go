@@ -12,23 +12,11 @@ func (a *App) showColorInputModal(title string, callback func(string)) {
 		SetLabel("Color: ").
 		SetFieldWidth(20)
 
-	closeModalAndUpdate := func(colorName string) {
-		a.pages.RemovePage("modal")
-		a.pages.SwitchToPage("main")
-		callback(colorName)
-	}
-
-	closeModal := func() {
-		a.pages.RemovePage("modal")
-		a.pages.SwitchToPage("main")
-	}
-
 	inputField.SetDoneFunc(func(key tcell.Key) {
 		if key == tcell.KeyEnter {
-			colorName := inputField.GetText()
-			closeModalAndUpdate(colorName)
+			a.confirmColorSelection(inputField.GetText(), callback)
 		} else if key == tcell.KeyEscape {
-			closeModal()
+			a.closeColorModal()
 		}
 	})
 
@@ -42,11 +30,10 @@ func (a *App) showColorInputModal(title string, callback func(string)) {
 		AddItem(tview.NewFlex().
 			AddItem(nil, 0, 1, false).
 			AddItem(tview.NewButton("OK").SetSelectedFunc(func() {
-				colorName := inputField.GetText()
-				closeModalAndUpdate(colorName)
+				a.confirmColorSelection(inputField.GetText(), callback)
 			}), 0, 1, true).
 			AddItem(tview.NewButton("Cancel").SetSelectedFunc(func() {
-				closeModal()
+				a.closeColorModal()
 			}), 0, 1, true).
 			AddItem(nil, 0, 1, false), 0, 1, false)
 
@@ -63,6 +50,16 @@ func (a *App) showColorInputModal(title string, callback func(string)) {
 
 	a.pages.AddPage("modal", modal, true, true)
 	a.app.SetFocus(inputField)
+}
+
+func (a *App) closeColorModal() {
+	a.pages.RemovePage("modal")
+	a.pages.SwitchToPage("main")
+}
+
+func (a *App) confirmColorSelection(colorName string, callback func(string)) {
+	a.closeColorModal()
+	callback(colorName)
 }
 
 func (a *App) changeBackgroundColor(colorName string) {

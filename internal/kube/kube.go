@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -10,15 +11,13 @@ import (
 )
 
 type KubeAdapterInterface interface {
+	FetchAllResources(ctx context.Context) (map[string]map[string][]Service, error)
 	ListContexts(ctx context.Context) ([]Context, error)
-
 	ListNamespaces(ctx context.Context, contextName string) ([]string, error)
-
 	ListServices(ctx context.Context, namespace, contextName string) ([]Service, error)
 
 	StopAllPortForwards()
-
-	RegisterAllServicesForContext(contextName string, usedPorts map[int32]bool) ([]ServiceTunnel, error)
+	RegisterAllServicesForContext(contextName string, usedPorts map[int32]bool, services []Service) ([]ServiceTunnel, error)
 	RegisterServicePortForward(contextName, serviceName, namespace string, usedPorts map[int32]bool) (ServiceTunnel, error)
 	UnregisterServicePortForward(contextName, namespace, pod string, remotePort int32) error
 }
@@ -78,6 +77,49 @@ func (m *kubeAdapter) ListContexts(ctx context.Context) ([]Context, error) {
 	return m.contextClient.ListContexts(ctx)
 }
 
+func (m *kubeAdapter) FetchAllResources(ctx context.Context) (map[string]map[string][]Service, error) {
+	contexts, err := m.ListContexts(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resourceMap := make(map[string]map[string][]Service)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, c := range contexts {
+		wg.Add(1)
+		go func(ctxName string) {
+			defer wg.Done()
+			namespaces, err := m.ListNamespaces(ctx, ctxName)
+			if err != nil {
+				return
+			}
+
+			ctxMap := make(map[string][]Service)
+			for _, ns := range namespaces {
+				if isSystemNamespace(ns) {
+					continue
+				}
+				services, err := m.ListServices(ctx, ns, ctxName)
+				if err != nil {
+					continue
+				}
+				if len(services) > 0 {
+					ctxMap[ns] = services
+				}
+			}
+
+			mu.Lock()
+			resourceMap[ctxName] = ctxMap
+			mu.Unlock()
+		}(c.Name)
+	}
+
+	wg.Wait()
+	return resourceMap, nil
+}
+
 func (m *kubeAdapter) ListNamespaces(ctx context.Context, contextName string) ([]string, error) {
 	return m.namespaceClient.ListNamespaces(ctx, contextName)
 }
@@ -90,14 +132,9 @@ func (m *kubeAdapter) StopAllPortForwards() {
 	m.portForwardClient.StopAllPortForwards()
 }
 
-func (m *kubeAdapter) RegisterAllServicesForContext(contextName string, usedPorts map[int32]bool) ([]ServiceTunnel, error) {
+func (m *kubeAdapter) RegisterAllServicesForContext(contextName string, usedPorts map[int32]bool, services []Service) ([]ServiceTunnel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	namespaces, err := m.namespaceClient.ListNonSystemNamespaces(ctx, contextName)
-	if err != nil {
-		return nil, fmt.Errorf("list namespaces: %w", err)
-	}
 
 	config, err := loadKubeconfigWithContext(m.kubeconfigPath, contextName)
 	if err != nil {
@@ -110,12 +147,30 @@ func (m *kubeAdapter) RegisterAllServicesForContext(contextName string, usedPort
 	}
 
 	var tunnels []ServiceTunnel
-	for _, ns := range namespaces {
-		nsTunnels, err := m.registerNamespaceServices(ctx, contextName, ns, usedPorts, config, clientset)
-		if err != nil {
-			continue
+	if len(services) > 0 {
+		// Group services by namespace
+		servicesByNamespace := make(map[string][]Service)
+		for _, svc := range services {
+			servicesByNamespace[svc.Namespace] = append(servicesByNamespace[svc.Namespace], svc)
 		}
-		tunnels = append(tunnels, nsTunnels...)
+
+		for ns, nsServices := range servicesByNamespace {
+			nsTunnels := m.registerServices(ctx, contextName, ns, nsServices, usedPorts, config, clientset)
+			tunnels = append(tunnels, nsTunnels...)
+		}
+	} else {
+		namespaces, err := m.namespaceClient.ListNonSystemNamespaces(ctx, contextName)
+		if err != nil {
+			return nil, fmt.Errorf("list namespaces: %w", err)
+		}
+
+		for _, ns := range namespaces {
+			nsTunnels, err := m.registerNamespaceServices(ctx, contextName, ns, usedPorts, config, clientset)
+			if err != nil {
+				continue
+			}
+			tunnels = append(tunnels, nsTunnels...)
+		}
 	}
 
 	if len(tunnels) == 0 {
@@ -123,6 +178,58 @@ func (m *kubeAdapter) RegisterAllServicesForContext(contextName string, usedPort
 	}
 
 	return tunnels, nil
+}
+
+func (m *kubeAdapter) registerServices(
+	ctx context.Context,
+	contextName string,
+	namespace string,
+	services []Service,
+	usedPorts map[int32]bool,
+	config *rest.Config,
+	clientset kubernetes.Interface,
+) []ServiceTunnel {
+	var tunnels []ServiceTunnel
+
+	for _, svc := range services {
+		if svc.ClusterIP == "" {
+			continue
+		}
+
+		httpPort := PickHTTPPort(&svc)
+		if httpPort == nil {
+			continue
+		}
+
+		pod, podPort, err := FindPodAndPortForService(ctx, m.podClient, namespace, contextName, svc.Selector, httpPort)
+		if err != nil {
+			continue
+		}
+
+		localPort, err := findAvailablePort(40000, usedPorts)
+		if err != nil {
+			continue
+		}
+
+		if err := m.portForwardClient.StartPortForward(contextName, namespace, pod.Name, localPort, podPort, config, clientset); err != nil {
+			continue
+		}
+
+		serviceDNS := BuildServiceDNS(svc.Name, namespace, httpPort.Port)
+
+		tunnels = append(tunnels, ServiceTunnel{
+			Context:    contextName,
+			Namespace:  namespace,
+			DNSURL:     serviceDNS,
+			Pod:        pod.Name,
+			LocalPort:  localPort,
+			RemotePort: podPort,
+		})
+
+		usedPorts[localPort] = true
+	}
+
+	return tunnels
 }
 
 func (m *kubeAdapter) registerNamespaceServices(

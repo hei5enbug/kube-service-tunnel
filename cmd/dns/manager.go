@@ -53,14 +53,14 @@ func (m *DNSManager) GetAllDNSTunnels() []DNSTunnel {
 	return result
 }
 
-func (m *DNSManager) RegisterAllByContext(contextName string) error {
+func (m *DNSManager) RegisterAllByContext(contextName string, services []kube.Service) error {
 	if contextName == "" {
 		return fmt.Errorf("context name is required")
 	}
 
 	usedPorts := m.getUsedPorts()
 
-	tunnels, err := m.kubeAdapter.RegisterAllServicesForContext(contextName, usedPorts)
+	tunnels, err := m.kubeAdapter.RegisterAllServicesForContext(contextName, usedPorts, services)
 	if err != nil {
 		return err
 	}

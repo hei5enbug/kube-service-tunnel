@@ -14,6 +14,7 @@ func (a *App) RenderHeader() *tview.Flex {
 		SetTextAlign(tview.AlignCenter).
 		SetDynamicColors(true)
 	a.ApplyViewStyles(title)
+	title.SetTextColor(systemColor)
 
 	contentFlex := tview.NewFlex().
 		AddItem(a.contextList, 0, 1, true).

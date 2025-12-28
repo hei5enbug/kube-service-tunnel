@@ -2,7 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"reflect"
+	"sync"
 
+	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -15,52 +18,63 @@ func (a *App) RenderNamespaceView() *tview.Table {
 		SetBorder(true)
 	a.ApplyViewStyles(namespaceView)
 
-	namespaceView.SetSelectedFunc(func(row, column int) {
+	namespaceView.SetSelectedFunc(a.onNamespaceSelected)
+	namespaceView.SetInputCapture(a.handleNamespaceInput)
+	namespaceView.SetFocusFunc(a.onNamespaceFocus)
+	namespaceView.SetBlurFunc(a.onNamespaceBlur)
+
+	var prevState store.State
+	var mu sync.Mutex
+	a.store.Subscribe(func(s store.State) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !reflect.DeepEqual(prevState.Namespaces, s.Namespaces) || prevState.SelectedNamespace != s.SelectedNamespace {
+			a.app.QueueUpdateDraw(func() {
+				a.UpdateNamespaceView()
+			})
+		}
+		prevState = s
+	})
+
+	return namespaceView
+}
+
+func (a *App) onNamespaceSelected(row, column int) {
+	go func() {
+		state := a.store.GetState()
+		if state.IsLoading {
+			return
+		}
+
 		namespaces := a.GetNamespaces()
 		if row >= 0 && row < len(namespaces) {
 			namespace := namespaces[row]
 
-			go func() {
-				a.app.QueueUpdateDraw(func() {
-					a.SetMessage(fmt.Sprintf("Loading services in %s...", namespace))
-				})
-
-				err := a.SetSelectedNamespace(namespace)
-
-				a.app.QueueUpdateDraw(func() {
-					if err != nil {
-						a.SetMessage(fmt.Sprintf("Error loading services: %v", err))
-					} else {
-						a.InitMainView()
-						a.UpdateMainView()
-						a.UpdateNamespaceView()
-						a.SetMessage(fmt.Sprintf("Namespace selected: %s", namespace))
-					}
-				})
-			}()
+			if err := a.SetSelectedNamespace(namespace); err != nil {
+				a.store.SetMessage(fmt.Sprintf("Error selecting namespace: %v", err))
+			} else {
+				a.store.SetMessage(fmt.Sprintf("Namespace selected: %s", namespace))
+			}
 		}
-	})
+	}()
+}
 
-	namespaceView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyTab:
-			a.app.SetFocus(a.mainView)
-			return nil
-		case tcell.KeyBacktab:
-			a.app.SetFocus(a.contextList)
-			return nil
-		}
-		return event
-	})
+func (a *App) handleNamespaceInput(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Key() {
+	case tcell.KeyTab:
+		go a.store.SetFocus(store.FocusServices)
+		return nil
+	case tcell.KeyBacktab:
+		go a.store.SetFocus(store.FocusContexts)
+		return nil
+	}
+	return event
+}
 
-	namespaceView.SetFocusFunc(func() {
-		namespaceView.SetBorderColor(tcell.ColorGreen)
-		a.UpdateHelpForFocus()
-	})
+func (a *App) onNamespaceFocus() {
+	a.namespaceView.SetBorderColor(tcell.ColorGreen)
+}
 
-	namespaceView.SetBlurFunc(func() {
-		namespaceView.SetBorderColor(tcell.ColorWhite)
-	})
-
-	return namespaceView
+func (a *App) onNamespaceBlur() {
+	a.namespaceView.SetBorderColor(tcell.ColorWhite)
 }
