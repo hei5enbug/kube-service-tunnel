@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -56,6 +57,10 @@ func (c *contextClient) ListContexts(ctx context.Context) ([]Context, error) {
 			User:    context.AuthInfo,
 		})
 	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
 
 	return result, nil
 }

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/byoungmin/kube-service-tunnel/cmd/ui"
+	"github.com/byoungmin/kube-service-tunnel/cmd/tui"
 )
 
 func checkHostsFilePermission() error {
@@ -20,12 +20,8 @@ func checkHostsFilePermission() error {
 
 func main() {
 	var kubeconfigPath string
-	var bgColor string
-	var textColor string
 
 	flag.StringVar(&kubeconfigPath, "kubeconfig", "", "Path to kubeconfig file (default: ~/.kube/config)")
-	flag.StringVar(&bgColor, "bg-color", "", "Background color (e.g., black, white, blue, or #000000). Default: black")
-	flag.StringVar(&textColor, "text-color", "", "Text color (e.g., black, white, blue, or #ffffff). Default: white")
 	flag.Parse()
 
 	if err := checkHostsFilePermission(); err != nil {
@@ -33,7 +29,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := ui.Run(kubeconfigPath, bgColor, textColor); err != nil {
+	if err := tui.Run(kubeconfigPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
