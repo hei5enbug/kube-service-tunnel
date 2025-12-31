@@ -9,6 +9,8 @@ import (
 	"github.com/rivo/tview"
 )
 
+const loadingFrameInterval = 80 * time.Millisecond
+
 var loadingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func (a *App) SetupLoadingSubscription() {
@@ -60,23 +62,38 @@ func (a *App) showLoadingModal() {
 
 	a.pages.AddPage("loading", modal, true, true)
 
-	go func() {
-		i := 0
-		for {
-			if !a.pages.HasPage("loading") {
-				return
-			}
-			a.app.QueueUpdateDraw(func() {
-				colorHex := colorToHex(systemColor)
-				content.SetText(fmt.Sprintf("\n[%s]%s[%s] Loading...[-]", colorHex, loadingFrames[i%len(loadingFrames)], colorHex))
-			})
-			i++
-			time.Sleep(80 * time.Millisecond)
+	stop := make(chan struct{})
+	a.loadingStop = stop
+	go a.animateLoading(content, colorToHex(systemColor), stop)
+}
+
+func (a *App) animateLoading(content *tview.TextView, colorHex string, stop <-chan struct{}) {
+	ticker := time.NewTicker(loadingFrameInterval)
+	defer ticker.Stop()
+
+	for i := 0; ; i++ {
+		frame := fmt.Sprintf("\n[%s]%s[%s] Loading...[-]", colorHex, loadingFrames[i%len(loadingFrames)], colorHex)
+		select {
+		case <-stop:
+			return
+		default:
 		}
-	}()
+		a.app.QueueUpdateDraw(func() { content.SetText(frame) })
+
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (a *App) hideLoadingModal() {
+	if a.loadingStop != nil {
+		close(a.loadingStop)
+		a.loadingStop = nil
+	}
+
 	if a.pages.HasPage("loading") {
 		a.pages.RemovePage("loading")
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
+	"github.com/byoungmin/kube-service-tunnel/internal/kube"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -43,26 +44,20 @@ func (a *App) handleServiceSelection() {
 	svc := services[serviceIndex]
 	contextName := a.GetSelectedContext()
 
-	currentFocus := state.Focus
+	if !a.store.TryBeginLoading() {
+		return
+	}
 
 	go func() {
-		a.store.SetLoading(true)
-		defer func() {
-			a.store.SetLoading(false)
+		defer a.store.SetLoading(false)
 
-			if currentFocus != "" {
-				go a.store.SetFocus(currentFocus)
-			}
-		}()
-
-		if err := a.manager.RegisterDNSTunnel(contextName, svc.Name, svc.Namespace); err != nil {
+		err := a.manager.RegisterDNSTunnel(a.ctx, contextName, svc.Name, svc.Namespace)
+		a.app.QueueUpdateDraw(a.UpdateDNSView)
+		if err != nil {
 			a.store.SetMessage(fmt.Sprintf("Port forwarding failed: %v", err))
-		} else {
-			a.app.QueueUpdateDraw(func() {
-				a.UpdateDNSView()
-			})
-			a.store.SetMessage(fmt.Sprintf("Port forwarding started: %s.%s", svc.Name, svc.Namespace))
+			return
 		}
+		a.store.SetMessage(fmt.Sprintf("Port forwarding started: http://%s", kube.BuildServiceDNS(svc.Name, svc.Namespace)))
 	}()
 }
 
@@ -97,10 +92,10 @@ func (a *App) RenderServiceView() *tview.Table {
 func (a *App) handleServiceInput(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyTab:
-		go a.store.SetFocus(store.FocusTunnels)
+		a.store.SetFocus(store.FocusTunnels)
 		return nil
 	case tcell.KeyBacktab:
-		go a.store.SetFocus(store.FocusNamespaces)
+		a.store.SetFocus(store.FocusNamespaces)
 		return nil
 	case tcell.KeyEnter:
 		a.handleServiceSelection()

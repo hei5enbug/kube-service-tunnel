@@ -1,27 +1,34 @@
 package kube
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"sync"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
 )
 
+const portForwardReadyTimeout = 30 * time.Second
+
+var ErrPortForwardNotFound = errors.New("port forward not found")
+
 type PortForwardClientInterface interface {
-	StartPortForward(contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) error
+	StartPortForward(ctx context.Context, contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) (forwardKey string, err error)
 	StopPortForward(key string) error
 	StopAllPortForwards()
+	SetLostHandler(handler func(key string, err error))
 }
 
 type portForwardClient struct {
-	forwards map[string]*PortForward
-	mu       sync.RWMutex
+	forwards     map[string]*PortForward
+	lostHandler  func(key string, err error)
+	run          forwardRunner
+	readyTimeout time.Duration
+	mu           sync.Mutex
 }
 
 type PortForward struct {
@@ -31,31 +38,41 @@ type PortForward struct {
 	Pod        string
 	LocalPort  int32
 	RemotePort int32
-	StopCh     chan struct{}
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	errCh    chan error
+	doneCh   chan struct{}
+}
+
+func (f *PortForward) stop() {
+	f.stopOnce.Do(func() { close(f.stopCh) })
 }
 
 func NewPortForwardClient() PortForwardClientInterface {
+	return newPortForwardClient(runPortForward, portForwardReadyTimeout)
+}
+
+func newPortForwardClient(run forwardRunner, readyTimeout time.Duration) *portForwardClient {
 	return &portForwardClient{
-		forwards: make(map[string]*PortForward),
+		forwards:     make(map[string]*PortForward),
+		run:          run,
+		readyTimeout: readyTimeout,
 	}
 }
 
-func BuildPortForwardKey(contextName, namespace, pod string, remotePort int32) string {
-	return fmt.Sprintf("%s:%s:%s:%d", contextName, namespace, pod, remotePort)
+func BuildPortForwardKey(contextName, namespace, pod string, remotePort, localPort int32) string {
+	return fmt.Sprintf("%s:%s:%s:%d:%d", contextName, namespace, pod, remotePort, localPort)
 }
 
-func (p *portForwardClient) StartPortForward(contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) error {
-	key := BuildPortForwardKey(contextName, namespace, pod, remotePort)
-
+func (p *portForwardClient) SetLostHandler(handler func(key string, err error)) {
 	p.mu.Lock()
-	if _, exists := p.forwards[key]; exists {
-		p.mu.Unlock()
-		return fmt.Errorf("port forward already exists: %s", key)
-	}
+	defer p.mu.Unlock()
+	p.lostHandler = handler
+}
 
-	stopCh := make(chan struct{}, 1)
-	readyCh := make(chan struct{})
-	errorCh := make(chan error, 1)
+func (p *portForwardClient) StartPortForward(ctx context.Context, contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) (string, error) {
+	key := BuildPortForwardKey(contextName, namespace, pod, remotePort, localPort)
 
 	forward := &PortForward{
 		Key:        key,
@@ -64,23 +81,80 @@ func (p *portForwardClient) StartPortForward(contextName, namespace, pod string,
 		Pod:        pod,
 		LocalPort:  localPort,
 		RemotePort: remotePort,
-		StopCh:     stopCh,
+		stopCh:     make(chan struct{}),
+		errCh:      make(chan error, 1),
+		doneCh:     make(chan struct{}),
 	}
 
-	p.forwards[key] = forward
-	p.mu.Unlock()
+	if err := p.add(forward); err != nil {
+		return "", err
+	}
 
-	go startPortForwardGoroutine(config, clientset, namespace, pod, localPort, remotePort, stopCh, readyCh, errorCh)
+	readyCh := make(chan struct{})
+	request := forwardRequest{config: config, clientset: clientset, namespace: namespace, pod: pod, localPort: localPort, remotePort: remotePort}
+	go p.runForward(forward, request, readyCh)
 
+	if err := waitForForwardReady(ctx, readyCh, forward.errCh, forward.doneCh, p.readyTimeout); err != nil {
+		forward.stop()
+		p.removeIfCurrent(forward)
+		return "", err
+	}
+
+	go p.watchForward(forward)
+	return key, nil
+}
+
+func (p *portForwardClient) add(forward *PortForward) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, exists := p.forwards[forward.Key]; exists {
+		return fmt.Errorf("port forward already exists: %s", forward.Key)
+	}
+	p.forwards[forward.Key] = forward
+	return nil
+}
+
+func (p *portForwardClient) removeIfCurrent(forward *PortForward) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.forwards[forward.Key] != forward {
+		return false
+	}
+	delete(p.forwards, forward.Key)
+	return true
+}
+
+func (p *portForwardClient) runForward(forward *PortForward, request forwardRequest, readyCh chan struct{}) {
+	defer close(forward.doneCh)
+	forward.errCh <- p.run(request, forward.stopCh, readyCh)
+}
+
+func (p *portForwardClient) watchForward(forward *PortForward) {
+	<-forward.doneCh
+
+	var exitErr error
 	select {
-	case <-readyCh:
-		return nil
-	case err := <-errorCh:
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		delete(p.forwards, key)
-		return err
+	case exitErr = <-forward.errCh:
+	default:
 	}
+
+	if !p.removeIfCurrent(forward) {
+		return
+	}
+
+	p.mu.Lock()
+	handler := p.lostHandler
+	p.mu.Unlock()
+	if handler == nil {
+		return
+	}
+
+	if exitErr == nil {
+		exitErr = portforward.ErrLostConnectionToPod
+	}
+	handler(forward.Key, exitErr)
 }
 
 func (p *portForwardClient) StopPortForward(key string) error {
@@ -88,97 +162,25 @@ func (p *portForwardClient) StopPortForward(key string) error {
 	forward, exists := p.forwards[key]
 	if !exists {
 		p.mu.Unlock()
-		return fmt.Errorf("port forward not found: %s", key)
+		return fmt.Errorf("%w: %s", ErrPortForwardNotFound, key)
 	}
 	delete(p.forwards, key)
 	p.mu.Unlock()
 
-	safeCloseChannel(forward.StopCh)
+	forward.stop()
 	return nil
 }
 
 func (p *portForwardClient) StopAllPortForwards() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	forwards := make([]*PortForward, 0, len(p.forwards))
 	for _, forward := range p.forwards {
 		forwards = append(forwards, forward)
 	}
 	p.forwards = make(map[string]*PortForward)
+	p.mu.Unlock()
 
 	for _, forward := range forwards {
-		safeCloseChannel(forward.StopCh)
+		forward.stop()
 	}
-}
-
-func safeCloseChannel(ch chan struct{}) {
-	select {
-	case <-ch:
-	default:
-		close(ch)
-	}
-}
-
-func safeCloseErrorChannel(ch chan error) {
-	select {
-	case <-ch:
-	default:
-		close(ch)
-	}
-}
-
-func startPortForwardGoroutine(config *rest.Config, clientset kubernetes.Interface, namespace, pod string, localPort, remotePort int32, stopCh, readyCh chan struct{}, errorCh chan error) {
-	defer func() {
-		safeCloseChannel(readyCh)
-		safeCloseErrorChannel(errorCh)
-	}()
-
-	reqURL := clientset.CoreV1().RESTClient().Post().
-		Resource("pods").
-		Namespace(namespace).
-		Name(pod).
-		SubResource("portforward").URL()
-
-	transport, upgrader, err := spdy.RoundTripperFor(config)
-	if err != nil {
-		errorCh <- fmt.Errorf("create round tripper: %w", err)
-		return
-	}
-
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", reqURL)
-
-	ports := []string{fmt.Sprintf("%d:%d", localPort, remotePort)}
-
-	pf, err := portforward.New(dialer, ports, stopCh, readyCh, io.Discard, io.Discard)
-	if err != nil {
-		errorCh <- fmt.Errorf("create port forward: %w", err)
-		return
-	}
-
-	err = pf.ForwardPorts()
-	if err != nil {
-		errorCh <- fmt.Errorf("forward ports: %w", err)
-	}
-}
-
-func findAvailablePort(startPort int32, usedPorts map[int32]bool) (int32, error) {
-	if startPort < 40000 {
-		startPort = 40000
-	}
-
-	for port := startPort; port < 65535; port++ {
-		if usedPorts[port] {
-			continue
-		}
-
-		addr, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-		if err != nil {
-			continue
-		}
-		defer addr.Close()
-		return port, nil
-	}
-
-	return 0, fmt.Errorf("no available port found starting from %d", startPort)
 }

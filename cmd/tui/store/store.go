@@ -2,6 +2,7 @@ package store
 
 import (
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 
@@ -29,10 +30,19 @@ type State struct {
 	Focus             FocusArea
 }
 
+type delivery struct {
+	state     State
+	listeners []func(State)
+}
+
 type Store struct {
 	mutex     sync.RWMutex
 	state     State
 	listeners []func(State)
+
+	queueMutex sync.Mutex
+	pending    []delivery
+	draining   bool
 }
 
 func NewStore() *Store {
@@ -55,27 +65,77 @@ func (store *Store) Subscribe(listener func(State)) {
 
 func (store *Store) setState(updateFn func(*State) bool) {
 	store.mutex.Lock()
-	changed := updateFn(&store.state)
-	if !changed {
-		store.mutex.Unlock()
+	defer store.mutex.Unlock()
+
+	if !updateFn(&store.state) {
 		return
 	}
 
-	stateCopy := store.state
-	stateCopy.Contexts = make([]kube.Context, len(store.state.Contexts))
-	copy(stateCopy.Contexts, store.state.Contexts)
-	stateCopy.Namespaces = make([]string, len(store.state.Namespaces))
-	copy(stateCopy.Namespaces, store.state.Namespaces)
-	stateCopy.Services = make([]kube.Service, len(store.state.Services))
-	copy(stateCopy.Services, store.state.Services)
+	store.enqueue(delivery{
+		state:     copyState(store.state),
+		listeners: slices.Clone(store.listeners),
+	})
+}
 
-	currentListeners := make([]func(State), len(store.listeners))
-	copy(currentListeners, store.listeners)
-	store.mutex.Unlock()
+func copyState(state State) State {
+	stateCopy := state
+	stateCopy.Contexts = append([]kube.Context(nil), state.Contexts...)
+	stateCopy.Namespaces = append([]string(nil), state.Namespaces...)
+	stateCopy.Services = append([]kube.Service(nil), state.Services...)
+	return stateCopy
+}
 
-	for _, listener := range currentListeners {
-		listener(stateCopy)
+// enqueue must be called with the state mutex held so that queue order equals commit order.
+func (store *Store) enqueue(item delivery) {
+	store.queueMutex.Lock()
+	defer store.queueMutex.Unlock()
+
+	store.pending = append(store.pending, item)
+	if store.draining {
+		return
 	}
+	store.draining = true
+	go store.drain()
+}
+
+func (store *Store) drain() {
+	for {
+		item, ok := store.dequeue()
+		if !ok {
+			return
+		}
+		for _, listener := range item.listeners {
+			listener(item.state)
+		}
+	}
+}
+
+func (store *Store) dequeue() (delivery, bool) {
+	store.queueMutex.Lock()
+	defer store.queueMutex.Unlock()
+
+	if len(store.pending) == 0 {
+		store.pending = nil
+		store.draining = false
+		return delivery{}, false
+	}
+	item := store.pending[0]
+	store.pending = store.pending[1:]
+	return item, true
+}
+
+// TryBeginLoading sets IsLoading and reports true only when it was not already set.
+func (store *Store) TryBeginLoading() bool {
+	began := false
+	store.setState(func(state *State) bool {
+		if state.IsLoading {
+			return false
+		}
+		state.IsLoading = true
+		began = true
+		return true
+	})
+	return began
 }
 
 func (store *Store) SetLoading(loading bool) {

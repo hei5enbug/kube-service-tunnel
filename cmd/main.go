@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui"
+	"github.com/byoungmin/kube-service-tunnel/internal/instance"
 )
 
 func checkHostsFilePermission() error {
@@ -19,6 +21,10 @@ func checkHostsFilePermission() error {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	var kubeconfigPath string
 
 	flag.StringVar(&kubeconfigPath, "kubeconfig", "", "Path to kubeconfig file (default: ~/.kube/config)")
@@ -26,11 +32,23 @@ func main() {
 
 	if err := checkHostsFilePermission(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+
+	lock, err := instance.Acquire(instance.DefaultLockPath)
+	if errors.Is(err, instance.ErrAlreadyRunning) {
+		fmt.Fprintln(os.Stderr, "Error: another kube-service-tunnel instance is already running")
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	defer lock.Release()
 
 	if err := tui.Run(kubeconfigPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }

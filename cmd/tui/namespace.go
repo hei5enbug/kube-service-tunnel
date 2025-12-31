@@ -40,32 +40,30 @@ func (a *App) RenderNamespaceView() *tview.Table {
 }
 
 func (a *App) onNamespaceSelected(row, column int) {
-	go func() {
-		state := a.store.GetState()
-		if state.IsLoading {
-			return
-		}
+	if a.store.GetState().IsLoading {
+		return
+	}
 
-		namespaces := a.GetNamespaces()
-		if row >= 0 && row < len(namespaces) {
-			namespace := namespaces[row]
+	namespaces := a.GetNamespaces()
+	if row < 0 || row >= len(namespaces) {
+		return
+	}
+	namespace := namespaces[row]
 
-			if err := a.SetSelectedNamespace(namespace); err != nil {
-				a.store.SetMessage(fmt.Sprintf("Error selecting namespace: %v", err))
-			} else {
-				a.store.SetMessage(fmt.Sprintf("Namespace selected: %s", namespace))
-			}
-		}
-	}()
+	if err := a.SetSelectedNamespace(namespace); err != nil {
+		a.store.SetMessage(fmt.Sprintf("Error selecting namespace: %v", err))
+	} else {
+		a.store.SetMessage(fmt.Sprintf("Namespace selected: %s", namespace))
+	}
 }
 
 func (a *App) handleNamespaceInput(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyTab:
-		go a.store.SetFocus(store.FocusServices)
+		a.store.SetFocus(store.FocusServices)
 		return nil
 	case tcell.KeyBacktab:
-		go a.store.SetFocus(store.FocusContexts)
+		a.store.SetFocus(store.FocusContexts)
 		return nil
 	}
 	return event

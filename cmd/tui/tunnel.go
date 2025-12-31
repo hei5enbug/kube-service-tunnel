@@ -11,36 +11,38 @@ import (
 func (a *App) handleTunnelDeletion() {
 	selectedRow, _ := a.dnsView.GetSelection()
 	if selectedRow <= 0 {
-		a.SetMessage("Please select a local DNS tunnel")
+		a.store.SetMessage("Please select a local DNS tunnel")
 		return
 	}
 
-	entries := a.manager.GetAllDNSTunnels()
+	entries := a.renderedTunnels
 	if len(entries) == 0 {
-		a.SetMessage("No local DNS tunnels to delete")
+		a.store.SetMessage("No local DNS tunnels to delete")
 		return
 	}
 
 	entryIndex := selectedRow - 1
 	if entryIndex < 0 || entryIndex >= len(entries) {
-		a.SetMessage("Invalid local DNS tunnel selection")
+		a.store.SetMessage("Invalid local DNS tunnel selection")
 		return
 	}
 
 	entry := entries[entryIndex]
 
+	if !a.store.TryBeginLoading() {
+		return
+	}
+
 	go func() {
-		a.store.SetLoading(true)
 		defer a.store.SetLoading(false)
 
-		if err := a.manager.UnregisterDNSTunnel(entry.DNSURL); err != nil {
+		err := a.manager.UnregisterDNSTunnel(entry.DNSURL)
+		a.app.QueueUpdateDraw(a.UpdateDNSView)
+		if err != nil {
 			a.store.SetMessage(fmt.Sprintf("Failed to stop local DNS tunnel: %v", err))
-		} else {
-			a.app.QueueUpdateDraw(func() {
-				a.UpdateDNSView()
-			})
-			a.store.SetMessage(fmt.Sprintf("Local DNS tunnel stopped: %s", entry.DNSURL))
+			return
 		}
+		a.store.SetMessage(fmt.Sprintf("Local DNS tunnel stopped: http://%s", entry.DNSURL))
 	}()
 }
 
@@ -63,10 +65,10 @@ func (a *App) RenderTunnelView() *tview.Table {
 func (a *App) handleTunnelInput(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyTab:
-		go a.store.SetFocus(store.FocusContexts)
+		a.store.SetFocus(store.FocusContexts)
 		return nil
 	case tcell.KeyBacktab:
-		go a.store.SetFocus(store.FocusServices)
+		a.store.SetFocus(store.FocusServices)
 		return nil
 	case tcell.KeyDelete:
 		a.handleTunnelDeletion()

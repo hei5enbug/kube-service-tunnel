@@ -2,19 +2,21 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes"
 )
 
 type ServicePort struct {
-	Name       string
-	Port       int32
-	TargetPort int32
-	Protocol   string
+	Name           string
+	Port           int32
+	TargetPort     int32
+	TargetPortName string
+	Protocol       string
 }
 
 type Service struct {
@@ -41,14 +43,9 @@ func NewServiceClient(kubeconfigPath string) (*serviceClient, error) {
 }
 
 func (s *serviceClient) ListServices(ctx context.Context, namespace, contextName string) ([]Service, error) {
-	config, err := loadKubeconfigWithContext(s.kubeconfigPath, contextName)
+	_, clientset, err := newClientForContext(s.kubeconfigPath, contextName)
 	if err != nil {
-		return nil, fmt.Errorf("load kubeconfig: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("create kubernetes client: %w", err)
+		return nil, err
 	}
 
 	services, err := clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
@@ -58,70 +55,82 @@ func (s *serviceClient) ListServices(ctx context.Context, namespace, contextName
 
 	var result []Service
 	for _, svc := range services.Items {
-		if svc.Spec.Type == corev1.ServiceTypeLoadBalancer || svc.Spec.Type == corev1.ServiceTypeNodePort {
-			continue
-		}
-
-		if svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
-			serviceType := string(svc.Spec.Type)
-			if serviceType == "" {
-				serviceType = string(corev1.ServiceTypeClusterIP)
-			}
-
-			var ports []ServicePort
-			for _, port := range svc.Spec.Ports {
-				targetPort := int32(0)
-				if port.TargetPort.Type == intstr.Int {
-					targetPort = port.TargetPort.IntVal
-				}
-				ports = append(ports, ServicePort{
-					Name:       port.Name,
-					Port:       port.Port,
-					TargetPort: targetPort,
-					Protocol:   string(port.Protocol),
-				})
-			}
-
-			selector := make(map[string]string)
-			if svc.Spec.Selector != nil {
-				for k, v := range svc.Spec.Selector {
-					selector[k] = v
-				}
-			}
-
-			result = append(result, Service{
-				Name:      svc.Name,
-				Namespace: svc.Namespace,
-				ClusterIP: svc.Spec.ClusterIP,
-				Type:      serviceType,
-				Ports:     ports,
-				Selector:  selector,
-			})
+		if converted, ok := serviceFromCorev1(svc); ok {
+			result = append(result, converted)
 		}
 	}
 
 	return result, nil
 }
 
+func serviceFromCorev1(svc corev1.Service) (Service, bool) {
+	if svc.Spec.Type == corev1.ServiceTypeLoadBalancer || svc.Spec.Type == corev1.ServiceTypeNodePort {
+		return Service{}, false
+	}
+	if svc.Spec.ClusterIP == "" || svc.Spec.ClusterIP == corev1.ClusterIPNone {
+		return Service{}, false
+	}
+
+	serviceType := string(svc.Spec.Type)
+	if serviceType == "" {
+		serviceType = string(corev1.ServiceTypeClusterIP)
+	}
+
+	selector := make(map[string]string, len(svc.Spec.Selector))
+	for k, v := range svc.Spec.Selector {
+		selector[k] = v
+	}
+
+	return Service{
+		Name:      svc.Name,
+		Namespace: svc.Namespace,
+		ClusterIP: svc.Spec.ClusterIP,
+		Type:      serviceType,
+		Ports:     servicePortsFromCorev1(svc.Spec.Ports),
+		Selector:  selector,
+	}, true
+}
+
+func servicePortsFromCorev1(ports []corev1.ServicePort) []ServicePort {
+	var result []ServicePort
+	for _, port := range ports {
+		converted := ServicePort{
+			Name:     port.Name,
+			Port:     port.Port,
+			Protocol: string(port.Protocol),
+		}
+		if port.TargetPort.Type == intstr.Int {
+			converted.TargetPort = port.TargetPort.IntVal
+		} else {
+			converted.TargetPortName = port.TargetPort.StrVal
+		}
+		result = append(result, converted)
+	}
+	return result
+}
+
+var httpPorts = []int32{80, 8080, 3000, 8000, 9000}
+
+var errNoSupportedHTTPPort = errors.New("no supported HTTP port (80, 8080, 3000, 8000, 9000/TCP)")
+
 func PickHTTPPort(svc *Service) *ServicePort {
 	for i := range svc.Ports {
-		if isHTTPPort(svc.Ports[i].Port) {
+		if isTCP(svc.Ports[i].Protocol) && isHTTPPort(svc.Ports[i].Port) {
 			return &svc.Ports[i]
 		}
 	}
 	return nil
 }
 
-func BuildServiceDNS(serviceName, namespace string, port int32) string {
-	host := fmt.Sprintf("%s.%s", serviceName, namespace)
-	if port == 80 {
-		return host
-	}
-	return fmt.Sprintf("%s:%d.%s", serviceName, port, namespace)
+func BuildServiceDNS(serviceName, namespace string) string {
+	return strings.ToLower(fmt.Sprintf("%s.%s", serviceName, namespace))
+}
+
+func isTCP(protocol string) bool {
+	return protocol == "" || protocol == string(corev1.ProtocolTCP)
 }
 
 func isHTTPPort(port int32) bool {
-	httpPorts := []int32{80, 8080, 3000, 8000, 9000}
 	for _, p := range httpPorts {
 		if port == p {
 			return true

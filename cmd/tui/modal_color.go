@@ -55,6 +55,7 @@ func (a *App) showColorInputModal(title string, callback func(string)) {
 func (a *App) closeColorModal() {
 	a.pages.RemovePage("modal")
 	a.pages.SwitchToPage("main")
+	a.app.SetFocus(a.getWidgetForFocus(a.store.GetState().Focus))
 }
 
 func (a *App) confirmColorSelection(colorName string, callback func(string)) {
@@ -65,7 +66,7 @@ func (a *App) confirmColorSelection(colorName string, callback func(string)) {
 func (a *App) changeBackgroundColor(colorName string) {
 	newColor := parseColor(colorName)
 	if newColor == tcell.ColorDefault && colorName != "" {
-		a.SetMessage(fmt.Sprintf("Invalid color: %s", colorName))
+		a.store.SetMessage(fmt.Sprintf("Invalid color: %s", colorName))
 		return
 	}
 	if newColor == tcell.ColorDefault {
@@ -78,13 +79,13 @@ func (a *App) changeBackgroundColor(colorName string) {
 	tview.Styles.MoreContrastBackgroundColor = backgroundColor
 
 	a.UpdateAllColors()
-	a.SetMessage(fmt.Sprintf("Background color changed to: %s", colorName))
+	a.store.SetMessage(fmt.Sprintf("Background color changed to: %s", colorName))
 }
 
 func (a *App) changeTextColor(colorName string) {
 	newColor := parseColor(colorName)
 	if newColor == tcell.ColorDefault && colorName != "" {
-		a.SetMessage(fmt.Sprintf("Invalid color: %s", colorName))
+		a.store.SetMessage(fmt.Sprintf("Invalid color: %s", colorName))
 		return
 	}
 	if newColor == tcell.ColorDefault {
@@ -96,5 +97,5 @@ func (a *App) changeTextColor(colorName string) {
 	tview.Styles.SecondaryTextColor = textColor
 
 	a.UpdateAllColors()
-	a.SetMessage(fmt.Sprintf("Text color changed to: %s", colorName))
+	a.store.SetMessage(fmt.Sprintf("Text color changed to: %s", colorName))
 }

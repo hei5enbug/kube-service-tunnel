@@ -2,10 +2,16 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+)
+
+var (
+	errServiceHasNoSelector = errors.New("service has no selector; only pod-backed services can be forwarded")
+	errNoReadyPods          = errors.New("no ready pods match service")
 )
 
 type PodPort struct {
@@ -15,11 +21,13 @@ type PodPort struct {
 }
 
 type Pod struct {
-	Name      string
-	Namespace string
-	Status    string
-	Ports     []PodPort
-	Labels    map[string]string
+	Name        string
+	Namespace   string
+	Status      string
+	Ready       bool
+	Terminating bool
+	Ports       []PodPort
+	Labels      map[string]string
 }
 
 type PodInterface interface {
@@ -38,14 +46,9 @@ func NewPodClient(kubeconfigPath string) (*podClient, error) {
 }
 
 func (p *podClient) ListPods(ctx context.Context, namespace, contextName string) ([]Pod, error) {
-	config, err := loadKubeconfigWithContext(p.kubeconfigPath, contextName)
+	_, clientset, err := newClientForContext(p.kubeconfigPath, contextName)
 	if err != nil {
-		return nil, fmt.Errorf("load kubeconfig: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("create kubernetes client: %w", err)
+		return nil, err
 	}
 
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
@@ -53,96 +56,103 @@ func (p *podClient) ListPods(ctx context.Context, namespace, contextName string)
 		return nil, fmt.Errorf("list pods in namespace %s: %w", namespace, err)
 	}
 
-	var result []Pod
-	for _, pod := range pods.Items {
-		var ports []PodPort
-		for _, container := range pod.Spec.Containers {
-			for _, port := range container.Ports {
-				ports = append(ports, PodPort{
-					Name:          port.Name,
-					ContainerPort: port.ContainerPort,
-					Protocol:      string(port.Protocol),
-				})
-			}
-		}
-
-		labels := make(map[string]string)
-		if pod.Labels != nil {
-			for k, v := range pod.Labels {
-				labels[k] = v
-			}
-		}
-
-		status := string(pod.Status.Phase)
-		result = append(result, Pod{
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
-			Status:    status,
-			Ports:     ports,
-			Labels:    labels,
-		})
-	}
-
-	return result, nil
+	return podsFromCorev1(pods.Items), nil
 }
 
 func (p *podClient) FindMatchingPods(ctx context.Context, namespace, contextName string, selector map[string]string) ([]Pod, error) {
-	config, err := loadKubeconfigWithContext(p.kubeconfigPath, contextName)
-	if err != nil {
-		return nil, fmt.Errorf("load kubeconfig: %w", err)
+	if len(selector) == 0 {
+		return nil, errServiceHasNoSelector
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	_, clientset, err := newClientForContext(p.kubeconfigPath, contextName)
 	if err != nil {
-		return nil, fmt.Errorf("create kubernetes client: %w", err)
+		return nil, err
 	}
 
-	labelSelector := metav1.LabelSelector{
-		MatchLabels: selector,
-	}
-	selectorString, err := metav1.LabelSelectorAsSelector(&labelSelector)
+	labelSelector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: selector})
 	if err != nil {
 		return nil, fmt.Errorf("create label selector: %w", err)
 	}
 
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: selectorString.String(),
+		LabelSelector: labelSelector.String(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list pods with selector in namespace %s: %w", namespace, err)
 	}
 
+	return podsFromCorev1(pods.Items), nil
+}
+
+func podsFromCorev1(items []corev1.Pod) []Pod {
 	var result []Pod
-	for _, pod := range pods.Items {
-		var ports []PodPort
-		for _, container := range pod.Spec.Containers {
-			for _, port := range container.Ports {
-				ports = append(ports, PodPort{
-					Name:          port.Name,
-					ContainerPort: port.ContainerPort,
-					Protocol:      string(port.Protocol),
-				})
-			}
-		}
+	for _, item := range items {
+		result = append(result, podFromCorev1(item))
+	}
+	return result
+}
 
-		labels := make(map[string]string)
-		if pod.Labels != nil {
-			for k, v := range pod.Labels {
-				labels[k] = v
-			}
+func podFromCorev1(pod corev1.Pod) Pod {
+	var ports []PodPort
+	for _, container := range pod.Spec.Containers {
+		for _, port := range container.Ports {
+			ports = append(ports, PodPort{
+				Name:          port.Name,
+				ContainerPort: port.ContainerPort,
+				Protocol:      string(port.Protocol),
+			})
 		}
-
-		status := string(pod.Status.Phase)
-		result = append(result, Pod{
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
-			Status:    status,
-			Ports:     ports,
-			Labels:    labels,
-		})
 	}
 
-	return result, nil
+	podLabels := make(map[string]string, len(pod.Labels))
+	for k, v := range pod.Labels {
+		podLabels[k] = v
+	}
+
+	return Pod{
+		Name:        pod.Name,
+		Namespace:   pod.Namespace,
+		Status:      string(pod.Status.Phase),
+		Ready:       isPodReady(pod),
+		Terminating: pod.DeletionTimestamp != nil,
+		Ports:       ports,
+		Labels:      podLabels,
+	}
+}
+
+func isPodReady(pod corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+func chooseReadyPod(pods []Pod) (Pod, error) {
+	for _, pod := range pods {
+		if pod.Status == string(corev1.PodRunning) && pod.Ready && !pod.Terminating {
+			return pod, nil
+		}
+	}
+	return Pod{}, errNoReadyPods
+}
+
+func resolveTargetPort(httpPort *ServicePort, pod Pod) (int32, error) {
+	if httpPort.TargetPort > 0 {
+		return httpPort.TargetPort, nil
+	}
+
+	if httpPort.TargetPortName == "" {
+		return httpPort.Port, nil
+	}
+
+	for _, p := range pod.Ports {
+		if p.Name == httpPort.TargetPortName {
+			return p.ContainerPort, nil
+		}
+	}
+	return 0, fmt.Errorf("pod %s has no container port named %q", pod.Name, httpPort.TargetPortName)
 }
 
 func FindPodAndPortForService(
@@ -153,34 +163,23 @@ func FindPodAndPortForService(
 	selector map[string]string,
 	httpPort *ServicePort,
 ) (Pod, int32, error) {
+	if len(selector) == 0 {
+		return Pod{}, 0, errServiceHasNoSelector
+	}
+
 	pods, err := podClient.FindMatchingPods(ctx, namespace, contextName, selector)
 	if err != nil {
 		return Pod{}, 0, fmt.Errorf("find matching pods: %w", err)
 	}
 
-	if len(pods) == 0 {
-		return Pod{}, 0, fmt.Errorf("no matching pods found")
+	pod, err := chooseReadyPod(pods)
+	if err != nil {
+		return Pod{}, 0, err
 	}
 
-	pod := pods[0]
-	var podPort int32
-
-	if httpPort.TargetPort > 0 {
-		podPort = httpPort.TargetPort
-	} else {
-		for _, p := range pod.Ports {
-			if p.Name == httpPort.Name || p.ContainerPort == httpPort.Port {
-				podPort = p.ContainerPort
-				break
-			}
-		}
-		if podPort == 0 && len(pod.Ports) > 0 {
-			podPort = pod.Ports[0].ContainerPort
-		}
-	}
-
-	if podPort == 0 {
-		return Pod{}, 0, fmt.Errorf("could not determine pod port")
+	podPort, err := resolveTargetPort(httpPort, pod)
+	if err != nil {
+		return Pod{}, 0, err
 	}
 
 	return pod, podPort, nil

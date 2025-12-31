@@ -2,13 +2,19 @@ package kube
 
 import (
 	"context"
-	"fmt"
-	"sync"
+	"errors"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
+
+const (
+	apiCallTimeout   = 30 * time.Second
+	discoveryTimeout = 20 * time.Second
+)
+
+var ErrNoEligibleServices = errors.New("no eligible services found")
 
 type KubeAdapterInterface interface {
 	FetchAllResources(ctx context.Context) (map[string]map[string][]Service, error)
@@ -17,9 +23,10 @@ type KubeAdapterInterface interface {
 	ListServices(ctx context.Context, namespace, contextName string) ([]Service, error)
 
 	StopAllPortForwards()
-	RegisterAllServicesForContext(contextName string, usedPorts map[int32]bool, services []Service) ([]ServiceTunnel, error)
-	RegisterServicePortForward(contextName, serviceName, namespace string, usedPorts map[int32]bool) (ServiceTunnel, error)
-	UnregisterServicePortForward(contextName, namespace, pod string, remotePort int32) error
+	SetPortForwardLostHandler(handler func(forwardKey string, err error))
+	RegisterAllServicesForContext(ctx context.Context, contextName string, namespaces []string, usedPorts map[int32]bool, registeredDNS map[string]bool) (RegisterAllResult, error)
+	RegisterServicePortForward(ctx context.Context, contextName, serviceName, namespace string, usedPorts map[int32]bool) (ServiceTunnel, error)
+	UnregisterServicePortForward(forwardKey string) error
 }
 
 type ServiceTunnel struct {
@@ -29,7 +36,21 @@ type ServiceTunnel struct {
 	Pod        string
 	LocalPort  int32
 	RemotePort int32
+	ForwardKey string
 }
+
+type ServiceRegistrationFailure struct {
+	Namespace string
+	Service   string
+	Reason    string
+}
+
+type RegisterAllResult struct {
+	Tunnels  []ServiceTunnel
+	Failures []ServiceRegistrationFailure
+}
+
+type clientFactory func(contextName string) (*rest.Config, kubernetes.Interface, error)
 
 type kubeAdapter struct {
 	kubeconfigPath    string
@@ -38,6 +59,7 @@ type kubeAdapter struct {
 	podClient         PodInterface
 	serviceClient     ServiceInterface
 	portForwardClient PortForwardClientInterface
+	newClient         clientFactory
 }
 
 func NewKubeAdapter(kubeconfigPath string) (KubeAdapterInterface, error) {
@@ -61,63 +83,21 @@ func NewKubeAdapter(kubeconfigPath string) (KubeAdapterInterface, error) {
 		return nil, err
 	}
 
-	pfClient := NewPortForwardClient()
-
 	return &kubeAdapter{
 		kubeconfigPath:    kubeconfigPath,
 		contextClient:     ctxClient,
 		namespaceClient:   nsClient,
 		podClient:         pClient,
 		serviceClient:     svcClient,
-		portForwardClient: pfClient,
+		portForwardClient: NewPortForwardClient(),
+		newClient: func(contextName string) (*rest.Config, kubernetes.Interface, error) {
+			return newClientForContext(kubeconfigPath, contextName)
+		},
 	}, nil
 }
 
 func (m *kubeAdapter) ListContexts(ctx context.Context) ([]Context, error) {
 	return m.contextClient.ListContexts(ctx)
-}
-
-func (m *kubeAdapter) FetchAllResources(ctx context.Context) (map[string]map[string][]Service, error) {
-	contexts, err := m.ListContexts(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	resourceMap := make(map[string]map[string][]Service)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for _, c := range contexts {
-		wg.Add(1)
-		go func(ctxName string) {
-			defer wg.Done()
-			namespaces, err := m.ListNamespaces(ctx, ctxName)
-			if err != nil {
-				return
-			}
-
-			ctxMap := make(map[string][]Service)
-			for _, ns := range namespaces {
-				if isSystemNamespace(ns) {
-					continue
-				}
-				services, err := m.ListServices(ctx, ns, ctxName)
-				if err != nil {
-					continue
-				}
-				if len(services) > 0 {
-					ctxMap[ns] = services
-				}
-			}
-
-			mu.Lock()
-			resourceMap[ctxName] = ctxMap
-			mu.Unlock()
-		}(c.Name)
-	}
-
-	wg.Wait()
-	return resourceMap, nil
 }
 
 func (m *kubeAdapter) ListNamespaces(ctx context.Context, contextName string) ([]string, error) {
@@ -132,229 +112,10 @@ func (m *kubeAdapter) StopAllPortForwards() {
 	m.portForwardClient.StopAllPortForwards()
 }
 
-func (m *kubeAdapter) RegisterAllServicesForContext(contextName string, usedPorts map[int32]bool, services []Service) ([]ServiceTunnel, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	config, err := loadKubeconfigWithContext(m.kubeconfigPath, contextName)
-	if err != nil {
-		return nil, fmt.Errorf("load kubeconfig: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("create kubernetes client: %w", err)
-	}
-
-	var tunnels []ServiceTunnel
-	if len(services) > 0 {
-		// Group services by namespace
-		servicesByNamespace := make(map[string][]Service)
-		for _, svc := range services {
-			servicesByNamespace[svc.Namespace] = append(servicesByNamespace[svc.Namespace], svc)
-		}
-
-		for ns, nsServices := range servicesByNamespace {
-			nsTunnels := m.registerServices(ctx, contextName, ns, nsServices, usedPorts, config, clientset)
-			tunnels = append(tunnels, nsTunnels...)
-		}
-	} else {
-		namespaces, err := m.namespaceClient.ListNonSystemNamespaces(ctx, contextName)
-		if err != nil {
-			return nil, fmt.Errorf("list namespaces: %w", err)
-		}
-
-		for _, ns := range namespaces {
-			nsTunnels, err := m.registerNamespaceServices(ctx, contextName, ns, usedPorts, config, clientset)
-			if err != nil {
-				continue
-			}
-			tunnels = append(tunnels, nsTunnels...)
-		}
-	}
-
-	if len(tunnels) == 0 {
-		return nil, fmt.Errorf("no services found to register")
-	}
-
-	return tunnels, nil
+func (m *kubeAdapter) SetPortForwardLostHandler(handler func(forwardKey string, err error)) {
+	m.portForwardClient.SetLostHandler(handler)
 }
 
-func (m *kubeAdapter) registerServices(
-	ctx context.Context,
-	contextName string,
-	namespace string,
-	services []Service,
-	usedPorts map[int32]bool,
-	config *rest.Config,
-	clientset kubernetes.Interface,
-) []ServiceTunnel {
-	var tunnels []ServiceTunnel
-
-	for _, svc := range services {
-		if svc.ClusterIP == "" {
-			continue
-		}
-
-		httpPort := PickHTTPPort(&svc)
-		if httpPort == nil {
-			continue
-		}
-
-		pod, podPort, err := FindPodAndPortForService(ctx, m.podClient, namespace, contextName, svc.Selector, httpPort)
-		if err != nil {
-			continue
-		}
-
-		localPort, err := findAvailablePort(40000, usedPorts)
-		if err != nil {
-			continue
-		}
-
-		if err := m.portForwardClient.StartPortForward(contextName, namespace, pod.Name, localPort, podPort, config, clientset); err != nil {
-			continue
-		}
-
-		serviceDNS := BuildServiceDNS(svc.Name, namespace, httpPort.Port)
-
-		tunnels = append(tunnels, ServiceTunnel{
-			Context:    contextName,
-			Namespace:  namespace,
-			DNSURL:     serviceDNS,
-			Pod:        pod.Name,
-			LocalPort:  localPort,
-			RemotePort: podPort,
-		})
-
-		usedPorts[localPort] = true
-	}
-
-	return tunnels
-}
-
-func (m *kubeAdapter) registerNamespaceServices(
-	ctx context.Context,
-	contextName string,
-	namespace string,
-	usedPorts map[int32]bool,
-	config *rest.Config,
-	clientset kubernetes.Interface,
-) ([]ServiceTunnel, error) {
-	services, err := m.ListServices(ctx, namespace, contextName)
-	if err != nil {
-		return nil, err
-	}
-
-	var tunnels []ServiceTunnel
-
-	for _, svc := range services {
-		if svc.ClusterIP == "" {
-			continue
-		}
-
-		httpPort := PickHTTPPort(&svc)
-		if httpPort == nil {
-			continue
-		}
-
-		pod, podPort, err := FindPodAndPortForService(ctx, m.podClient, namespace, contextName, svc.Selector, httpPort)
-		if err != nil {
-			continue
-		}
-
-		localPort, err := findAvailablePort(40000, usedPorts)
-		if err != nil {
-			continue
-		}
-
-		if err := m.portForwardClient.StartPortForward(contextName, namespace, pod.Name, localPort, podPort, config, clientset); err != nil {
-			continue
-		}
-
-		serviceDNS := BuildServiceDNS(svc.Name, namespace, httpPort.Port)
-
-		tunnels = append(tunnels, ServiceTunnel{
-			Context:    contextName,
-			Namespace:  namespace,
-			DNSURL:     serviceDNS,
-			Pod:        pod.Name,
-			LocalPort:  localPort,
-			RemotePort: podPort,
-		})
-
-		usedPorts[localPort] = true
-	}
-
-	return tunnels, nil
-}
-
-func (m *kubeAdapter) RegisterServicePortForward(contextName, serviceName, namespace string, usedPorts map[int32]bool) (ServiceTunnel, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	services, err := m.ListServices(ctx, namespace, contextName)
-	if err != nil {
-		return ServiceTunnel{}, fmt.Errorf("list services: %w", err)
-	}
-
-	var targetService *Service
-	for _, svc := range services {
-		if svc.Name == serviceName && svc.Namespace == namespace {
-			if svc.ClusterIP == "" {
-				return ServiceTunnel{}, fmt.Errorf("service %s/%s has no ClusterIP", namespace, serviceName)
-			}
-			targetService = &svc
-			break
-		}
-	}
-
-	if targetService == nil {
-		return ServiceTunnel{}, fmt.Errorf("service %s/%s not found in current namespace", namespace, serviceName)
-	}
-
-	httpPort := PickHTTPPort(targetService)
-	if httpPort == nil {
-		return ServiceTunnel{}, fmt.Errorf("no HTTP port found for service %s/%s", namespace, serviceName)
-	}
-
-	pod, podPort, err := FindPodAndPortForService(ctx, m.podClient, namespace, contextName, targetService.Selector, httpPort)
-	if err != nil {
-		return ServiceTunnel{}, fmt.Errorf("find matching pods: %w", err)
-	}
-
-	localPort, err := findAvailablePort(40000, usedPorts)
-	if err != nil {
-		return ServiceTunnel{}, fmt.Errorf("find available port: %w", err)
-	}
-
-	config, err := loadKubeconfigWithContext(m.kubeconfigPath, contextName)
-	if err != nil {
-		return ServiceTunnel{}, fmt.Errorf("load kubeconfig: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return ServiceTunnel{}, fmt.Errorf("create kubernetes client: %w", err)
-	}
-
-	err = m.portForwardClient.StartPortForward(contextName, namespace, pod.Name, localPort, podPort, config, clientset)
-	if err != nil {
-		return ServiceTunnel{}, fmt.Errorf("start port forward: %w", err)
-	}
-
-	serviceDNS := BuildServiceDNS(serviceName, namespace, httpPort.Port)
-
-	return ServiceTunnel{
-		Context:    contextName,
-		Namespace:  namespace,
-		DNSURL:     serviceDNS,
-		Pod:        pod.Name,
-		LocalPort:  localPort,
-		RemotePort: podPort,
-	}, nil
-}
-
-func (m *kubeAdapter) UnregisterServicePortForward(contextName, namespace, pod string, remotePort int32) error {
-	key := BuildPortForwardKey(contextName, namespace, pod, remotePort)
-	return m.portForwardClient.StopPortForward(key)
+func (m *kubeAdapter) UnregisterServicePortForward(forwardKey string) error {
+	return m.portForwardClient.StopPortForward(forwardKey)
 }

@@ -76,9 +76,9 @@ func (a *App) UpdateNamespaceView() {
 	}
 
 	if len(namespaces) == 0 {
-		a.SetMessage("No namespaces with services found")
+		a.store.SetMessage("No namespaces with services found")
 	} else if selectedNamespace == "" {
-		a.SetMessage("Select a namespace to view services")
+		a.store.SetMessage("Select a namespace to view services")
 	}
 }
 
@@ -138,6 +138,7 @@ func (a *App) UpdateDNSView() {
 	a.dnsView.SetCell(0, 2, headerCell("DNS URL", 2))
 
 	entries := a.manager.GetAllDNSTunnels()
+	a.renderedTunnels = entries
 
 	if len(entries) == 0 {
 		a.dnsView.SetCell(1, 0, newTableCell("No tunnel entries").SetTextColor(textColor).SetExpansion(1))
@@ -152,7 +153,7 @@ func (a *App) UpdateDNSView() {
 		row := i + 1
 		a.dnsView.SetCell(row, 0, dataCell(entry.Context, 1))
 		a.dnsView.SetCell(row, 1, dataCell(entry.Namespace, 1))
-		a.dnsView.SetCell(row, 2, dataCell(entry.DNSURL, 2))
+		a.dnsView.SetCell(row, 2, dataCell("http://"+entry.DNSURL, 2))
 	}
 }
 

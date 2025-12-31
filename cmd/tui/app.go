@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,9 +40,13 @@ type App struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	loadingStop chan struct{}
+
+	renderedTunnels []dns.DNSTunnel
 }
 
-func Run(kubeconfigPath string) error {
+func Run(kubeconfigPath string) (runErr error) {
 	backgroundColor = tcell.NewRGBColor(0, 0, 0)
 	textColor = tcell.ColorWhite
 
@@ -50,14 +56,14 @@ func Run(kubeconfigPath string) error {
 	tview.Styles.PrimaryTextColor = textColor
 	tview.Styles.SecondaryTextColor = textColor
 
-	manager, err := dns.NewDNSManager(kubeconfigPath)
-	if err != nil {
-		return fmt.Errorf("create service tunnel manager: %w", err)
-	}
-
 	kubeAdapter, err := kube.NewKubeAdapter(kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("create kube adapter: %w", err)
+	}
+
+	manager, err := dns.NewDNSManager(kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("create service tunnel manager: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -72,19 +78,23 @@ func Run(kubeconfigPath string) error {
 		store:       store.NewStore(),
 	}
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigChan)
+	defer func() {
+		cancel()
+		if cleanupErr := manager.Cleanup(); cleanupErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("cleanup: %w", cleanupErr))
+		}
+	}()
+
 	app.setupUI()
 	app.app.SetRoot(app.pages, true)
 	app.app.SetFocus(nil)
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-sigChan
-		app.Quit()
-	}()
-
 	app.app.SetInputCapture(app.handleGlobalInput)
+	manager.SetTunnelLostHandler(app.onTunnelLost)
 
+	go app.quitOnSignal(sigChan)
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		app.fetchAllResources()
@@ -93,9 +103,21 @@ func Run(kubeconfigPath string) error {
 	return app.app.Run()
 }
 
+func (app *App) quitOnSignal(sigChan <-chan os.Signal) {
+	select {
+	case <-sigChan:
+		app.Quit()
+	case <-app.ctx.Done():
+	}
+}
+
+func (app *App) onTunnelLost(tunnel dns.DNSTunnel, err error) {
+	app.store.SetMessage(fmt.Sprintf("Tunnel lost: %s (%v); press Enter on the service to reconnect", tunnel.DNSURL, err))
+	app.app.QueueUpdateDraw(app.UpdateDNSView)
+}
+
 func (app *App) Quit() {
 	app.cancel()
-	app.manager.Cleanup()
 	app.app.Stop()
 }
 
@@ -173,27 +195,35 @@ func (app *App) getWidgetForFocus(focus store.FocusArea) tview.Primitive {
 
 func (app *App) fetchAllResources() {
 	app.store.SetLoading(true)
+	defer app.store.SetLoading(false)
 
 	resourceMap, err := app.kubeAdapter.FetchAllResources(app.ctx)
+	app.store.SetAllResources(resourceMap)
+	app.store.SetFocus(store.FocusContexts)
+
 	if err != nil {
-		app.store.SetLoading(false)
-		app.store.SetMessage(fmt.Sprintf("Error fetching resources: %v", err))
+		app.store.SetMessage(describeFetchError(err))
 		return
 	}
-
-	app.store.SetAllResources(resourceMap)
-	app.store.SetLoading(false)
-	app.store.SetFocus(store.FocusContexts)
 	app.store.SetMessage("All resources loaded and cached")
 }
 
-func (app *App) handleGlobalInput(event *tcell.EventKey) *tcell.EventKey {
-	state := app.store.GetState()
-	if state.IsLoading {
-		return nil
+func describeFetchError(err error) string {
+	count := 1
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		count = len(joined.Unwrap())
 	}
+	firstLine, _, _ := strings.Cut(err.Error(), "\n")
+	return fmt.Sprintf("Loaded with errors: %s (%d errors)", firstLine, count)
+}
+
+func (app *App) handleGlobalInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlC {
 		app.Quit()
+		return nil
+	}
+	if app.store.GetState().IsLoading {
 		return nil
 	}
 	if event.Key() == tcell.KeyCtrlB {

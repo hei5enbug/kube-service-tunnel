@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"k8s.io/client-go/tools/clientcmd"
@@ -27,11 +26,11 @@ type contextClient struct {
 
 func NewContextClient(kubeconfigPath string) (*contextClient, error) {
 	if kubeconfigPath == "" {
-		home, err := os.UserHomeDir()
+		defaultPath, err := DefaultKubeconfigPath()
 		if err != nil {
-			return nil, fmt.Errorf("get user home directory: %w", err)
+			return nil, err
 		}
-		kubeconfigPath = filepath.Join(home, ".kube", "config")
+		kubeconfigPath = defaultPath
 	}
 
 	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {

@@ -1,13 +1,22 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
+)
+
+const (
+	listenHost        = "127.0.0.1"
+	readHeaderTimeout = 10 * time.Second
 )
 
 type ProxyAdapterInterface interface {
@@ -21,6 +30,7 @@ type ProxyAdapterInterface interface {
 type proxyAdapter struct {
 	server   *http.Server
 	listener net.Listener
+	done     chan struct{}
 	routes   map[string]int32
 	mu       sync.RWMutex
 	port     int32
@@ -33,48 +43,54 @@ func NewProxyAdapter() ProxyAdapterInterface {
 }
 
 func (p *proxyAdapter) StartIfNotRunning(port int32) error {
-	err := p.start(port)
-	if err != nil && err.Error() == "proxy server already running" {
-		return nil
-	}
-	return err
-}
-
-func (p *proxyAdapter) start(port int32) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.listener != nil {
-		return fmt.Errorf("proxy server already running")
+	if p.server != nil {
+		return nil
 	}
 
-	p.port = port
-	p.routes = make(map[string]int32)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		HandleProxyRequest(p.routes, &p.mu, w, r)
-	})
-
-	p.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
-	}
-
-	listener, err := net.Listen("tcp", p.server.Addr)
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, port))
 	if err != nil {
 		return fmt.Errorf("listen on port %d: %w", port, err)
 	}
 
-	p.listener = listener
+	server := &http.Server{
+		Handler:           http.HandlerFunc(p.handle),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ErrorLog:          log.New(io.Discard, "", 0),
+	}
+	done := make(chan struct{})
 
-	go func() {
-		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("proxy server error: %v\n", err)
-		}
-	}()
+	p.port = port
+	p.server = server
+	p.listener = listener
+	p.done = done
+
+	go p.serve(server, listener, done)
 
 	return nil
+}
+
+func (p *proxyAdapter) serve(server *http.Server, listener net.Listener, done chan struct{}) {
+	err := server.Serve(listener)
+	close(done)
+	if !errors.Is(err, http.ErrServerClosed) {
+		p.markStopped(server)
+	}
+}
+
+// markStopped clears the running state only when the adapter still points at the failed server.
+func (p *proxyAdapter) markStopped(server *http.Server) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.server != server {
+		return
+	}
+	p.server = nil
+	p.listener = nil
+	p.done = nil
 }
 
 func (p *proxyAdapter) Stop() error {
@@ -85,21 +101,28 @@ func (p *proxyAdapter) Stop() error {
 		return nil
 	}
 
-	if p.listener != nil {
-		if err := p.listener.Close(); err != nil {
-			return fmt.Errorf("close listener: %w", err)
-		}
-	}
-
-	if err := p.server.Close(); err != nil {
-		return fmt.Errorf("close server: %w", err)
-	}
-
-	p.listener = nil
+	server, done := p.server, p.done
 	p.server = nil
+	p.listener = nil
+	p.done = nil
 	p.routes = make(map[string]int32)
 
+	err := server.Close()
+	<-done
+	if err != nil {
+		return fmt.Errorf("close server: %w", err)
+	}
 	return nil
+}
+
+func (p *proxyAdapter) addr() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.listener == nil {
+		return ""
+	}
+	return p.listener.Addr().String()
 }
 
 func (p *proxyAdapter) AddRoute(host string, localPort int32) {
@@ -110,42 +133,41 @@ func (p *proxyAdapter) AddRoutes(routes map[string]int32) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for host, port := range routes {
-		p.routes[host] = port
+		p.routes[normalizeHost(host)] = port
 	}
 }
 
 func (p *proxyAdapter) RemoveRoute(host string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.routes, host)
+	delete(p.routes, normalizeHost(host))
 }
 
-func HandleProxyRequest(routes map[string]int32, mu *sync.RWMutex, w http.ResponseWriter, r *http.Request) {
-	hostWithPort := r.Host
-	host := hostWithPort
-	if strings.Contains(hostWithPort, ":") {
-		parts := strings.Split(hostWithPort, ":")
-		host = parts[0]
+// normalizeHost drops the port when present, lowercases and strips one trailing dot.
+func normalizeHost(hostport string) string {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
 	}
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
 
-	mu.RLock()
-	localPort, exists := routes[hostWithPort]
-	if !exists {
-		localPort, exists = routes[host]
-	}
-	mu.RUnlock()
+func (p *proxyAdapter) lookup(host string) (int32, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	port, ok := p.routes[host]
+	return port, ok
+}
 
+func (p *proxyAdapter) handle(w http.ResponseWriter, r *http.Request) {
+	localPort, exists := p.lookup(normalizeHost(r.Host))
 	if !exists {
-		http.Error(w, fmt.Sprintf("no route found for host: %s", hostWithPort), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf("no route found for host: %s", r.Host), http.StatusNotFound)
 		return
 	}
 
-	targetURL, err := url.Parse(fmt.Sprintf("http://localhost:%d", localPort))
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid target URL: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.ServeHTTP(w, r)
+	targetURL := &url.URL{Scheme: "http", Host: net.JoinHostPort(listenHost, fmt.Sprint(localPort))}
+	reverse := httputil.NewSingleHostReverseProxy(targetURL)
+	reverse.ErrorLog = log.New(io.Discard, "", 0)
+	reverse.ServeHTTP(w, r)
 }
