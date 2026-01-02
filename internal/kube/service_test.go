@@ -70,6 +70,72 @@ func TestPickHTTPPort(t *testing.T) {
 	}
 }
 
+func TestEligibility(t *testing.T) {
+	tests := []struct {
+		name       string
+		svc        Service
+		wantPort   int32
+		wantReason string
+	}{
+		{"셀렉터와 HTTP 포트가 있으면 고른 포트와 빈 사유를 돌려준다", Service{Selector: selectorApp, Ports: []ServicePort{{Port: 5432, Protocol: "TCP"}, {Port: 8080, Protocol: "TCP"}}}, 8080, ""},
+		{"셀렉터가 없으면 no selector 사유를 돌려준다", Service{Ports: []ServicePort{{Port: 80, Protocol: "TCP"}}}, 0, ReasonNoSelector},
+		{"셀렉터가 비어 있는 맵이어도 no selector 사유를 돌려준다", Service{Selector: map[string]string{}, Ports: []ServicePort{{Port: 80}}}, 0, ReasonNoSelector},
+		{"지원하는 HTTP 포트가 없으면 no HTTP port 사유를 돌려준다", Service{Selector: selectorApp, Ports: []ServicePort{{Port: 80, Protocol: "UDP"}}}, 0, ReasonNoHTTPPort},
+		{"셀렉터도 HTTP 포트도 없으면 no selector가 먼저 적용된다", Service{Ports: []ServicePort{{Port: 5432, Protocol: "TCP"}}}, 0, ReasonNoSelector},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			svc := tt.svc
+
+			// when
+			port, reason := Eligibility(&svc)
+
+			// then
+			if reason != tt.wantReason {
+				t.Fatalf("Eligibility() reason = %q, want %q", reason, tt.wantReason)
+			}
+			if tt.wantReason != "" {
+				if port != nil {
+					t.Fatalf("Eligibility() port = %+v, want nil", port)
+				}
+				return
+			}
+			if port == nil || port.Port != tt.wantPort {
+				t.Fatalf("Eligibility() port = %+v, want port %d", port, tt.wantPort)
+			}
+		})
+	}
+}
+
+func TestEligibilityError(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{"no selector 사유는 셀렉터 없음 오류로 바뀐다", ReasonNoSelector, errServiceHasNoSelector.Error()},
+		{"no HTTP port 사유는 지원 포트 없음 오류로 바뀐다", ReasonNoHTTPPort, errNoSupportedHTTPPort.Error()},
+		{"알 수 없는 사유는 사유 문장을 그대로 담은 오류가 된다", "other", "other"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			reason := tt.reason
+
+			// when
+			err := eligibilityError(reason)
+
+			// then
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("eligibilityError(%q) = %v, want %q", reason, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestServiceFromCorev1(t *testing.T) {
 	newService := func(mutate func(*corev1.Service)) corev1.Service {
 		svc := corev1.Service{

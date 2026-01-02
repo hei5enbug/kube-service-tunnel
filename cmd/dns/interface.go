@@ -19,11 +19,13 @@ type DNSTunnel struct {
 type BulkRegistrationResult struct {
 	Registered []DNSTunnel
 	Failures   []kube.ServiceRegistrationFailure
+	Skipped    []kube.ServiceRegistrationFailure
+	Ineligible []kube.ServiceRegistrationFailure
 }
 
 type DNSManagerInterface interface {
 	GetAllDNSTunnels() []DNSTunnel
-	RegisterAllByContext(ctx context.Context, contextName string, namespaces []string) (BulkRegistrationResult, error)
+	RegisterServices(ctx context.Context, contextName string, targets []kube.ServiceRef, progress func(kube.RegistrationProgress)) (BulkRegistrationResult, error)
 	RegisterDNSTunnel(ctx context.Context, contextName, serviceName, namespace string) error
 	UnregisterDNSTunnel(dnsURL string) error
 	SetTunnelLostHandler(handler func(tunnel DNSTunnel, err error))

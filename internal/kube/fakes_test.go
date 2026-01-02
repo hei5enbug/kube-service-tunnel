@@ -38,9 +38,7 @@ func (f *fakeServiceClient) ListServices(ctx context.Context, namespace, context
 
 type fakeNamespaceClient struct {
 	namespaces       []string
-	nonSystem        []string
 	err              error
-	nonSystemCalled  bool
 	namespacesByCtx  map[string][]string
 	namespaceErrsCtx map[string]error
 }
@@ -55,14 +53,11 @@ func (f *fakeNamespaceClient) ListNamespaces(ctx context.Context, contextName st
 	return f.namespaces, f.err
 }
 
-func (f *fakeNamespaceClient) ListNonSystemNamespaces(ctx context.Context, contextName string) ([]string, error) {
-	f.nonSystemCalled = true
-	return f.nonSystem, f.err
-}
-
 type fakeContextClient struct {
-	contexts []Context
-	err      error
+	contexts   []Context
+	err        error
+	current    string
+	currentErr error
 }
 
 func (f *fakeContextClient) ListContexts(ctx context.Context) ([]Context, error) {
@@ -70,7 +65,7 @@ func (f *fakeContextClient) ListContexts(ctx context.Context) ([]Context, error)
 }
 
 func (f *fakeContextClient) GetCurrentContext(ctx context.Context) (string, error) {
-	return "", nil
+	return f.current, f.currentErr
 }
 
 type fakeStartedForward struct {

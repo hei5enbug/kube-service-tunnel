@@ -122,6 +122,35 @@ func PickHTTPPort(svc *Service) *ServicePort {
 	return nil
 }
 
+const (
+	ReasonNoSelector = "no selector"
+	ReasonNoHTTPPort = "no HTTP port"
+)
+
+// Eligibility returns the port that would be forwarded and an empty reason when svc can be registered.
+// Otherwise it returns a nil port and the reason.
+func Eligibility(svc *Service) (*ServicePort, string) {
+	if len(svc.Selector) == 0 {
+		return nil, ReasonNoSelector
+	}
+	port := PickHTTPPort(svc)
+	if port == nil {
+		return nil, ReasonNoHTTPPort
+	}
+	return port, ""
+}
+
+func eligibilityError(reason string) error {
+	switch reason {
+	case ReasonNoSelector:
+		return errServiceHasNoSelector
+	case ReasonNoHTTPPort:
+		return errNoSupportedHTTPPort
+	default:
+		return errors.New(reason)
+	}
+}
+
 func BuildServiceDNS(serviceName, namespace string) string {
 	return strings.ToLower(fmt.Sprintf("%s.%s", serviceName, namespace))
 }

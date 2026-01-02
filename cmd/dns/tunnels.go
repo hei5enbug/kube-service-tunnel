@@ -17,15 +17,15 @@ func (m *DNSManager) getUsedPorts() map[int32]bool {
 	return usedPorts
 }
 
-func (m *DNSManager) registeredDNS() map[string]bool {
+func (m *DNSManager) registeredOwners() map[string]string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	registered := make(map[string]bool, len(m.dnsTunnels))
+	owners := make(map[string]string, len(m.dnsTunnels))
 	for _, t := range m.dnsTunnels {
-		registered[t.DNSURL] = true
+		owners[t.DNSURL] = t.Context
 	}
-	return registered
+	return owners
 }
 
 func (m *DNSManager) addTunnel(tunnel DNSTunnel) {

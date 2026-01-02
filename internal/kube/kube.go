@@ -17,14 +17,16 @@ const (
 var ErrNoEligibleServices = errors.New("no eligible services found")
 
 type KubeAdapterInterface interface {
-	FetchAllResources(ctx context.Context) (map[string]map[string][]Service, error)
+	CurrentContext(ctx context.Context) (string, error)
+	FetchAllResources(ctx context.Context) (map[string]ContextResources, error)
+	FetchContextResources(ctx context.Context, contextName string) ContextResources
 	ListContexts(ctx context.Context) ([]Context, error)
 	ListNamespaces(ctx context.Context, contextName string) ([]string, error)
 	ListServices(ctx context.Context, namespace, contextName string) ([]Service, error)
 
 	StopAllPortForwards()
 	SetPortForwardLostHandler(handler func(forwardKey string, err error))
-	RegisterAllServicesForContext(ctx context.Context, contextName string, namespaces []string, usedPorts map[int32]bool, registeredDNS map[string]bool) (RegisterAllResult, error)
+	RegisterServicesForContext(ctx context.Context, contextName string, targets []ServiceRef, usedPorts map[int32]bool, owners map[string]string, progress func(RegistrationProgress)) (RegisterAllResult, error)
 	RegisterServicePortForward(ctx context.Context, contextName, serviceName, namespace string, usedPorts map[int32]bool) (ServiceTunnel, error)
 	UnregisterServicePortForward(forwardKey string) error
 }
@@ -45,9 +47,22 @@ type ServiceRegistrationFailure struct {
 	Reason    string
 }
 
+type ServiceRef struct {
+	Namespace string
+	Name      string
+}
+
+type RegistrationProgress struct {
+	Done    int
+	Total   int
+	Current string
+}
+
 type RegisterAllResult struct {
-	Tunnels  []ServiceTunnel
-	Failures []ServiceRegistrationFailure
+	Tunnels    []ServiceTunnel
+	Failures   []ServiceRegistrationFailure
+	Skipped    []ServiceRegistrationFailure
+	Ineligible []ServiceRegistrationFailure
 }
 
 type clientFactory func(contextName string) (*rest.Config, kubernetes.Interface, error)
@@ -94,6 +109,10 @@ func NewKubeAdapter(kubeconfigPath string) (KubeAdapterInterface, error) {
 			return newClientForContext(kubeconfigPath, contextName)
 		},
 	}, nil
+}
+
+func (m *kubeAdapter) CurrentContext(ctx context.Context) (string, error) {
+	return m.contextClient.GetCurrentContext(ctx)
 }
 
 func (m *kubeAdapter) ListContexts(ctx context.Context) ([]Context, error) {

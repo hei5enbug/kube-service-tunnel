@@ -10,7 +10,6 @@ import (
 
 type NamespaceInterface interface {
 	ListNamespaces(ctx context.Context, contextName string) ([]string, error)
-	ListNonSystemNamespaces(ctx context.Context, contextName string) ([]string, error)
 }
 
 type namespaceClient struct {
@@ -55,20 +54,4 @@ func isSystemNamespace(namespace string) bool {
 		}
 	}
 	return false
-}
-
-func (n *namespaceClient) ListNonSystemNamespaces(ctx context.Context, contextName string) ([]string, error) {
-	allNamespaces, err := n.ListNamespaces(ctx, contextName)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []string
-	for _, ns := range allNamespaces {
-		if isSystemNamespace(ns) {
-			continue
-		}
-		result = append(result, ns)
-	}
-	return result, nil
 }

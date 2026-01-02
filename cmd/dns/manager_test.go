@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -66,6 +67,10 @@ func TestRegisterDNSTunnel(t *testing.T) {
 	})
 }
 
+func bulkTargets() []kube.ServiceRef {
+	return []kube.ServiceRef{{Namespace: "ns", Name: "a"}, {Namespace: "ns", Name: "b"}}
+}
+
 func bulkTunnels() kube.RegisterAllResult {
 	return kube.RegisterAllResult{
 		Tunnels: []kube.ServiceTunnel{
@@ -76,7 +81,7 @@ func bulkTunnels() kube.RegisterAllResult {
 	}
 }
 
-func TestRegisterAllByContext(t *testing.T) {
+func TestRegisterServices(t *testing.T) {
 	t.Run("프록시 시작에 실패하면 시작된 모든 포워드를 중지한다", func(t *testing.T) {
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
@@ -84,7 +89,7 @@ func TestRegisterAllByContext(t *testing.T) {
 		proxyFake.startErr = errors.New("port busy")
 
 		// when
-		result, err := manager.RegisterAllByContext(context.Background(), "ctx", []string{"ns"})
+		result, err := manager.RegisterServices(context.Background(), "ctx", bulkTargets(), nil)
 
 		// then
 		if err != nil {
@@ -108,7 +113,7 @@ func TestRegisterAllByContext(t *testing.T) {
 		hostsFake.addErrs["a.ns"] = errors.New("conflict")
 
 		// when
-		result, err := manager.RegisterAllByContext(context.Background(), "ctx", []string{"ns"})
+		result, err := manager.RegisterServices(context.Background(), "ctx", bulkTargets(), nil)
 
 		// then
 		if err != nil {
@@ -128,19 +133,117 @@ func TestRegisterAllByContext(t *testing.T) {
 		}
 	})
 
-	t.Run("이미 등록된 호스트 이름 집합을 쿠버네티스 어댑터에 넘긴다", func(t *testing.T) {
+	t.Run("이미 등록된 호스트 이름과 소유 컨텍스트의 맵, 대상 목록을 쿠버네티스 어댑터에 넘긴다", func(t *testing.T) {
 		// given
 		manager, kubeFake, _, _ := newTestManager()
-		if err := manager.RegisterDNSTunnel(context.Background(), "ctx", "web", "default"); err != nil {
+		if err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", "web", "default"); err != nil {
 			t.Fatalf("registration failed: %v", err)
+		}
+		targets := []kube.ServiceRef{{Namespace: "ns", Name: "a"}}
+
+		// when
+		_, err := manager.RegisterServices(context.Background(), "ctx-b", targets, nil)
+
+		// then
+		if err != nil || !reflect.DeepEqual(kubeFake.bulkOwners, map[string]string{"web.default": "ctx-a"}) {
+			t.Fatalf("err = %v, owners = %v, want web.default owned by ctx-a", err, kubeFake.bulkOwners)
+		}
+		if kubeFake.bulkContext != "ctx-b" || !reflect.DeepEqual(kubeFake.bulkTargets, targets) {
+			t.Fatalf("context = %q, targets = %v, want ctx-b and given targets", kubeFake.bulkContext, kubeFake.bulkTargets)
+		}
+	})
+
+	t.Run("건너뜀과 부적합 분류를 결과에 그대로 전달한다", func(t *testing.T) {
+		// given
+		manager, kubeFake, _, _ := newTestManager()
+		skipped := kube.ServiceRegistrationFailure{Namespace: "ns", Service: "s", Reason: "already registered (context x)"}
+		ineligible := kube.ServiceRegistrationFailure{Namespace: "ns", Service: "i", Reason: kube.ReasonNoSelector}
+		kubeFake.bulkResult = kube.RegisterAllResult{
+			Tunnels:    []kube.ServiceTunnel{tunnelFor("ctx", "a", "ns", 40000)},
+			Skipped:    []kube.ServiceRegistrationFailure{skipped},
+			Ineligible: []kube.ServiceRegistrationFailure{ineligible},
 		}
 
 		// when
-		_, err := manager.RegisterAllByContext(context.Background(), "ctx", nil)
+		result, err := manager.RegisterServices(context.Background(), "ctx", bulkTargets(), nil)
 
 		// then
-		if err != nil || !kubeFake.bulkDNSSeen["web.default"] {
-			t.Fatalf("err = %v, registeredDNS = %v", err, kubeFake.bulkDNSSeen)
+		if err != nil || len(result.Registered) != 1 {
+			t.Fatalf("err = %v, registered = %+v, want one tunnel", err, result.Registered)
+		}
+		if !reflect.DeepEqual(result.Skipped, kubeFake.bulkResult.Skipped) || !reflect.DeepEqual(result.Ineligible, kubeFake.bulkResult.Ineligible) {
+			t.Fatalf("skipped = %+v, ineligible = %+v, want propagated categories", result.Skipped, result.Ineligible)
+		}
+	})
+
+	t.Run("프록시 시작에 실패해도 건너뜀과 부적합 분류는 유지한다", func(t *testing.T) {
+		// given
+		manager, kubeFake, _, proxyFake := newTestManager()
+		kubeFake.bulkResult = bulkTunnels()
+		kubeFake.bulkResult.Skipped = []kube.ServiceRegistrationFailure{{Namespace: "ns", Service: "s", Reason: "already registered (context x)"}}
+		kubeFake.bulkResult.Ineligible = []kube.ServiceRegistrationFailure{{Namespace: "ns", Service: "i", Reason: kube.ReasonNoHTTPPort}}
+		proxyFake.startErr = errors.New("port busy")
+
+		// when
+		result, err := manager.RegisterServices(context.Background(), "ctx", bulkTargets(), nil)
+
+		// then
+		if err != nil || len(result.Skipped) != 1 || len(result.Ineligible) != 1 {
+			t.Fatalf("err = %v, result = %+v, want categories kept", err, result)
+		}
+	})
+
+	t.Run("어댑터가 오류를 내면 시작된 포워드를 중지하고 분류된 결과와 오류를 함께 돌려준다", func(t *testing.T) {
+		// given
+		manager, kubeFake, _, _ := newTestManager()
+		kubeFake.bulkResult = bulkTunnels()
+		kubeFake.bulkResult.Skipped = []kube.ServiceRegistrationFailure{{Namespace: "ns", Service: "s", Reason: "already registered (context x)"}}
+		kubeFake.bulkErr = context.Canceled
+
+		// when
+		result, err := manager.RegisterServices(context.Background(), "ctx", bulkTargets(), nil)
+
+		// then
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+		if got := kubeFake.stoppedKeys(); len(got) != 2 {
+			t.Fatalf("stopped forwards = %v, want 2", got)
+		}
+		if len(result.Registered) != 0 || len(result.Failures) != 1 || len(result.Skipped) != 1 || len(manager.GetAllDNSTunnels()) != 0 {
+			t.Fatalf("result = %+v, want no registrations and categories kept", result)
+		}
+	})
+
+	t.Run("진행 상황 콜백을 어댑터에 그대로 전달한다", func(t *testing.T) {
+		// given
+		manager, kubeFake, _, _ := newTestManager()
+		kubeFake.bulkProgress = []kube.RegistrationProgress{{Done: 0, Total: 1, Current: "a.ns"}, {Done: 1, Total: 1}}
+		var got []kube.RegistrationProgress
+
+		// when
+		_, err := manager.RegisterServices(context.Background(), "ctx", bulkTargets(), func(p kube.RegistrationProgress) { got = append(got, p) })
+
+		// then
+		if err != nil || !reflect.DeepEqual(got, kubeFake.bulkProgress) {
+			t.Fatalf("err = %v, progress = %+v, want %+v", err, got, kubeFake.bulkProgress)
+		}
+	})
+
+	t.Run("컨텍스트 이름이 없거나 종료된 뒤에는 어댑터를 호출하지 않고 거절한다", func(t *testing.T) {
+		// given
+		manager, kubeFake, _, _ := newTestManager()
+		_, emptyErr := manager.RegisterServices(context.Background(), "", bulkTargets(), nil)
+		if err := manager.Cleanup(); err != nil {
+			t.Fatalf("cleanup failed: %v", err)
+		}
+
+		// when
+		_, closedErr := manager.RegisterServices(context.Background(), "ctx", bulkTargets(), nil)
+
+		// then
+		if emptyErr == nil || !errors.Is(closedErr, errShuttingDown) || kubeFake.bulkContext != "" {
+			t.Fatalf("emptyErr = %v, closedErr = %v, context seen = %q", emptyErr, closedErr, kubeFake.bulkContext)
 		}
 	})
 }

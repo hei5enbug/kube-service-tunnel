@@ -1,104 +1,102 @@
 package tui
 
 import (
-	"fmt"
-	"sync"
 	"time"
 
-	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
 	"github.com/rivo/tview"
 )
 
-const loadingFrameInterval = 80 * time.Millisecond
+const (
+	loadingPage          = "loading"
+	loadingFrameInterval = 80 * time.Millisecond
+	loadingWidth         = 64
+	loadingHeight        = 5
+	defaultLoadingLabel  = "Loading…"
+)
 
 var loadingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-func (a *App) SetupLoadingSubscription() {
-	var prevState store.State
-	var mu sync.Mutex
-	a.store.Subscribe(func(s store.State) {
-		mu.Lock()
-		defer mu.Unlock()
-		if s.IsLoading != prevState.IsLoading {
-			a.app.QueueUpdateDraw(func() {
-				if s.IsLoading {
-					a.showLoadingModal()
-				} else {
-					a.hideLoadingModal()
-				}
-			})
-		}
-		prevState = s
-	})
+// loadingView is touched only on the UI goroutine, except stop, which the animator reads.
+type loadingView struct {
+	text  *tview.TextView
+	label string
+	frame int
+	stop  chan struct{}
 }
 
-func (a *App) showLoadingModal() {
-	if a.pages.HasPage("loading") {
-		return
+func (a *App) syncLoading() {
+	state := a.store.GetState()
+	switch {
+	case state.IsLoading && a.loading == nil:
+		a.showLoading(state.LoadingLabel)
+	case state.IsLoading:
+		a.loading.label = state.LoadingLabel
+		a.drawLoadingFrame()
+	case a.loading != nil:
+		a.hideLoading()
 	}
-
-	content := tview.NewTextView()
-	content.SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true).
-		SetBackgroundColor(backgroundColor)
-
-	contentBox := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(nil, 0, 1, false).
-		AddItem(content, 3, 1, false).
-		AddItem(nil, 0, 1, false)
-
-	contentBox.SetBorder(true).
-		SetBorderColor(systemColor).
-		SetBackgroundColor(backgroundColor)
-
-	modal := tview.NewFlex().
-		AddItem(nil, 0, 1, false).
-		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
-			AddItem(contentBox, 7, 1, true).
-			AddItem(nil, 0, 1, false), 30, 1, true).
-		AddItem(nil, 0, 1, false)
-
-	a.pages.AddPage("loading", modal, true, true)
-
-	stop := make(chan struct{})
-	a.loadingStop = stop
-	go a.animateLoading(content, colorToHex(systemColor), stop)
 }
 
-func (a *App) animateLoading(content *tview.TextView, colorHex string, stop <-chan struct{}) {
+func (a *App) showLoading(label string) {
+	text := tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignCenter)
+	text.SetBorder(true)
+	a.styleTextModal(text)
+	text.SetBorderColor(a.theme.Border)
+	a.loading = &loadingView{text: text, label: label, stop: make(chan struct{})}
+	a.drawLoadingFrame()
+	a.pages.AddPage(loadingPage, newCentered(text, loadingWidth, fixedHeight(loadingHeight)), true, true)
+	a.app.SetFocus(text)
+	a.renderHints()
+	go a.animateLoading(a.loading.stop)
+}
+
+func (a *App) drawLoadingFrame() {
+	view := a.loading
+	label := view.label
+	if label == "" {
+		label = defaultLoadingLabel
+	}
+	frame := loadingFrames[view.frame%len(loadingFrames)]
+	view.text.SetText("\n" + colorTag(a.theme.Info) + frame + colorTag(a.theme.Text) + " " + tview.Escape(label))
+}
+
+func (a *App) hideLoading() {
+	close(a.loading.stop)
+	a.loading = nil
+	a.pages.RemovePage(loadingPage)
+	a.restoreFocus()
+	a.renderChrome()
+}
+
+func (a *App) restoreFocus() {
+	switch {
+	case a.modal != nil:
+		a.app.SetFocus(a.modal.focus)
+	case a.filterPane != "":
+		a.app.SetFocus(a.filterInput)
+	default:
+		a.focusPane(a.store.GetState().Focus)
+	}
+}
+
+// animateLoading runs on its own goroutine, so it may queue UI updates.
+func (a *App) animateLoading(stop <-chan struct{}) {
 	ticker := time.NewTicker(loadingFrameInterval)
 	defer ticker.Stop()
-
-	for i := 0; ; i++ {
-		frame := fmt.Sprintf("\n[%s]%s[%s] Loading...[-]", colorHex, loadingFrames[i%len(loadingFrames)], colorHex)
+	for {
 		select {
 		case <-stop:
 			return
-		default:
-		}
-		a.app.QueueUpdateDraw(func() { content.SetText(frame) })
-
-		select {
-		case <-stop:
+		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
 		}
-	}
-}
-
-func (a *App) hideLoadingModal() {
-	if a.loadingStop != nil {
-		close(a.loadingStop)
-		a.loadingStop = nil
-	}
-
-	if a.pages.HasPage("loading") {
-		a.pages.RemovePage("loading")
-
-		state := a.store.GetState()
-		target := a.getWidgetForFocus(state.Focus)
-		a.app.SetFocus(target)
+		a.app.QueueUpdateDraw(func() {
+			if a.loading == nil || a.loading.stop != stop {
+				return
+			}
+			a.loading.frame++
+			a.drawLoadingFrame()
+		})
 	}
 }

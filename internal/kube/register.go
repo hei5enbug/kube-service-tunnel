@@ -46,90 +46,123 @@ func findService(services []Service, name, namespace string) (Service, bool) {
 	return Service{}, false
 }
 
-func (m *kubeAdapter) RegisterAllServicesForContext(
+// RegisterServicesForContext registers the given services in order. Services are listed freshly once per
+// distinct namespace. progress, when non-nil, is called synchronously on the caller's goroutine before each
+// target (Done = targets finished) and once after the last one (Done == Total, empty Current); it is not
+// called after the context is canceled.
+func (m *kubeAdapter) RegisterServicesForContext(
 	ctx context.Context,
 	contextName string,
-	namespaces []string,
+	targets []ServiceRef,
 	usedPorts map[int32]bool,
-	registeredDNS map[string]bool,
+	owners map[string]string,
+	progress func(RegistrationProgress),
 ) (RegisterAllResult, error) {
+	if len(targets) == 0 {
+		return RegisterAllResult{}, ErrNoEligibleServices
+	}
+
 	config, clientset, err := m.newClient(contextName)
 	if err != nil {
 		return RegisterAllResult{}, err
 	}
 
-	namespaces, err = m.resolveNamespaces(ctx, contextName, namespaces)
-	if err != nil {
-		return RegisterAllResult{}, err
+	run := &bulkRun{
+		adapter:     m,
+		contextName: contextName,
+		usedPorts:   usedPorts,
+		owners:      copyOwners(owners),
+		config:      config,
+		clientset:   clientset,
+		listings:    make(map[string]namespaceListing),
 	}
 
 	var result RegisterAllResult
-	for _, ns := range namespaces {
-		nsResult := m.registerNamespace(ctx, contextName, ns, usedPorts, registeredDNS, config, clientset)
-		result.Tunnels = append(result.Tunnels, nsResult.Tunnels...)
-		result.Failures = append(result.Failures, nsResult.Failures...)
+	for i, target := range targets {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if progress != nil {
+			progress(RegistrationProgress{Done: i, Total: len(targets), Current: BuildServiceDNS(target.Name, target.Namespace)})
+		}
+		run.process(ctx, target, &result)
 	}
-
-	if len(result.Tunnels) == 0 && len(result.Failures) == 0 {
-		return result, ErrNoEligibleServices
+	if progress != nil {
+		progress(RegistrationProgress{Done: len(targets), Total: len(targets)})
 	}
 	return result, nil
 }
 
-func (m *kubeAdapter) resolveNamespaces(ctx context.Context, contextName string, namespaces []string) ([]string, error) {
-	if len(namespaces) > 0 {
-		return namespaces, nil
+func copyOwners(owners map[string]string) map[string]string {
+	copied := make(map[string]string, len(owners))
+	for dns, owner := range owners {
+		copied[dns] = owner
 	}
-
-	listCtx, cancel := withAPITimeout(ctx)
-	defer cancel()
-
-	listed, err := m.namespaceClient.ListNonSystemNamespaces(listCtx, contextName)
-	if err != nil {
-		return nil, fmt.Errorf("list namespaces: %w", err)
-	}
-	return listed, nil
+	return copied
 }
 
-func (m *kubeAdapter) registerNamespace(
-	ctx context.Context,
-	contextName string,
-	namespace string,
-	usedPorts map[int32]bool,
-	registeredDNS map[string]bool,
-	config *rest.Config,
-	clientset kubernetes.Interface,
-) RegisterAllResult {
+type namespaceListing struct {
+	services []Service
+	err      error
+}
+
+type bulkRun struct {
+	adapter     *kubeAdapter
+	contextName string
+	usedPorts   map[int32]bool
+	owners      map[string]string
+	config      *rest.Config
+	clientset   kubernetes.Interface
+	listings    map[string]namespaceListing
+}
+
+func (r *bulkRun) listing(ctx context.Context, namespace string) namespaceListing {
+	if cached, ok := r.listings[namespace]; ok {
+		return cached
+	}
 	listCtx, cancel := withAPITimeout(ctx)
-	services, err := m.ListServices(listCtx, namespace, contextName)
+	services, err := r.adapter.ListServices(listCtx, namespace, r.contextName)
 	cancel()
-	if err != nil {
-		return RegisterAllResult{Failures: []ServiceRegistrationFailure{{Namespace: namespace, Reason: err.Error()}}}
-	}
-
-	var result RegisterAllResult
-	for _, svc := range services {
-		if PickHTTPPort(&svc) == nil {
-			continue
-		}
-
-		if registeredDNS[BuildServiceDNS(svc.Name, svc.Namespace)] {
-			result.Failures = append(result.Failures, failureFor(svc, "already registered"))
-			continue
-		}
-
-		tunnel, err := m.registerService(ctx, contextName, svc, usedPorts, config, clientset)
-		if err != nil {
-			result.Failures = append(result.Failures, failureFor(svc, err.Error()))
-			continue
-		}
-		result.Tunnels = append(result.Tunnels, tunnel)
-	}
-	return result
+	listing := namespaceListing{services: services, err: err}
+	r.listings[namespace] = listing
+	return listing
 }
 
-func failureFor(svc Service, reason string) ServiceRegistrationFailure {
-	return ServiceRegistrationFailure{Namespace: svc.Namespace, Service: svc.Name, Reason: reason}
+func (r *bulkRun) process(ctx context.Context, target ServiceRef, result *RegisterAllResult) {
+	fail := func(reason string) ServiceRegistrationFailure {
+		return ServiceRegistrationFailure{Namespace: target.Namespace, Service: target.Name, Reason: reason}
+	}
+
+	listing := r.listing(ctx, target.Namespace)
+	if listing.err != nil {
+		result.Failures = append(result.Failures, fail(listing.err.Error()))
+		return
+	}
+
+	svc, found := findService(listing.services, target.Name, target.Namespace)
+	if !found {
+		result.Failures = append(result.Failures, fail("not found"))
+		return
+	}
+
+	if _, reason := Eligibility(&svc); reason != "" {
+		result.Ineligible = append(result.Ineligible, fail(reason))
+		return
+	}
+
+	dns := BuildServiceDNS(svc.Name, svc.Namespace)
+	if owner := r.owners[dns]; owner != "" {
+		result.Skipped = append(result.Skipped, fail(fmt.Sprintf("already registered (context %s)", owner)))
+		return
+	}
+
+	tunnel, err := r.adapter.registerService(ctx, r.contextName, svc, r.usedPorts, r.config, r.clientset)
+	if err != nil {
+		result.Failures = append(result.Failures, fail(err.Error()))
+		return
+	}
+	r.owners[dns] = r.contextName
+	result.Tunnels = append(result.Tunnels, tunnel)
 }
 
 func (m *kubeAdapter) registerService(
@@ -140,9 +173,9 @@ func (m *kubeAdapter) registerService(
 	config *rest.Config,
 	clientset kubernetes.Interface,
 ) (ServiceTunnel, error) {
-	httpPort := PickHTTPPort(&svc)
-	if httpPort == nil {
-		return ServiceTunnel{}, errNoSupportedHTTPPort
+	httpPort, reason := Eligibility(&svc)
+	if reason != "" {
+		return ServiceTunnel{}, eligibilityError(reason)
 	}
 
 	podCtx, cancel := withAPITimeout(ctx)

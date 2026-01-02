@@ -66,7 +66,9 @@ func (m *DNSManager) SetTunnelLostHandler(handler func(tunnel DNSTunnel, err err
 	m.lostHandler = handler
 }
 
-func (m *DNSManager) RegisterAllByContext(ctx context.Context, contextName string, namespaces []string) (BulkRegistrationResult, error) {
+// RegisterServices registers the given services of one context in bulk. progress, when non-nil, is called
+// synchronously while the manager operation lock is held, so it must not call back into the manager.
+func (m *DNSManager) RegisterServices(ctx context.Context, contextName string, targets []kube.ServiceRef, progress func(kube.RegistrationProgress)) (BulkRegistrationResult, error) {
 	if contextName == "" {
 		return BulkRegistrationResult{}, errors.New("context name is required")
 	}
@@ -77,9 +79,13 @@ func (m *DNSManager) RegisterAllByContext(ctx context.Context, contextName strin
 		return BulkRegistrationResult{}, errShuttingDown
 	}
 
-	result, err := m.kubeAdapter.RegisterAllServicesForContext(ctx, contextName, namespaces, m.getUsedPorts(), m.registeredDNS())
+	result, err := m.kubeAdapter.RegisterServicesForContext(ctx, contextName, targets, m.getUsedPorts(), m.registeredOwners(), progress)
 	if err != nil {
-		return BulkRegistrationResult{Failures: result.Failures}, errors.Join(err, m.stopForwards(result.Tunnels))
+		return BulkRegistrationResult{
+			Failures:   result.Failures,
+			Skipped:    result.Skipped,
+			Ineligible: result.Ineligible,
+		}, errors.Join(err, m.stopForwards(result.Tunnels))
 	}
 
 	return m.activateAll(result), nil
@@ -92,7 +98,7 @@ func (m *DNSManager) activateAll(result kube.RegisterAllResult) BulkRegistration
 		for _, tunnel := range result.Tunnels {
 			failures = append(failures, failureOf(tunnel, reason))
 		}
-		return BulkRegistrationResult{Failures: failures}
+		return BulkRegistrationResult{Failures: failures, Skipped: result.Skipped, Ineligible: result.Ineligible}
 	}
 
 	registered := make([]DNSTunnel, 0, len(result.Tunnels))
@@ -105,7 +111,7 @@ func (m *DNSManager) activateAll(result kube.RegisterAllResult) BulkRegistration
 		}
 		registered = append(registered, dnsTunnel)
 	}
-	return BulkRegistrationResult{Registered: registered, Failures: failures}
+	return BulkRegistrationResult{Registered: registered, Failures: failures, Skipped: result.Skipped, Ineligible: result.Ineligible}
 }
 
 func (m *DNSManager) RegisterDNSTunnel(ctx context.Context, contextName, serviceName, namespace string) error {

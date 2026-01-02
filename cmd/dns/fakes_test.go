@@ -14,14 +14,23 @@ type fakeKube struct {
 	registerFn    func(contextName, serviceName, namespace string) (kube.ServiceTunnel, error)
 	bulkResult    kube.RegisterAllResult
 	bulkErr       error
-	bulkDNSSeen   map[string]bool
+	bulkOwners    map[string]string
+	bulkTargets   []kube.ServiceRef
+	bulkContext   string
+	bulkProgress  []kube.RegistrationProgress
 	stopped       []string
 	stopAllCalls  int
 	lostHandler   func(forwardKey string, err error)
 }
 
-func (f *fakeKube) FetchAllResources(ctx context.Context) (map[string]map[string][]kube.Service, error) {
+func (f *fakeKube) CurrentContext(ctx context.Context) (string, error) { return "", nil }
+
+func (f *fakeKube) FetchAllResources(ctx context.Context) (map[string]kube.ContextResources, error) {
 	return nil, nil
+}
+
+func (f *fakeKube) FetchContextResources(ctx context.Context, contextName string) kube.ContextResources {
+	return kube.ContextResources{}
 }
 
 func (f *fakeKube) ListContexts(ctx context.Context) ([]kube.Context, error) { return nil, nil }
@@ -44,12 +53,19 @@ func (f *fakeKube) SetPortForwardLostHandler(handler func(forwardKey string, err
 	f.lostHandler = handler
 }
 
-func (f *fakeKube) RegisterAllServicesForContext(
-	ctx context.Context, contextName string, namespaces []string, usedPorts map[int32]bool, registeredDNS map[string]bool,
+func (f *fakeKube) RegisterServicesForContext(
+	ctx context.Context, contextName string, targets []kube.ServiceRef, usedPorts map[int32]bool, owners map[string]string, progress func(kube.RegistrationProgress),
 ) (kube.RegisterAllResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.bulkDNSSeen = registeredDNS
+	f.bulkContext = contextName
+	f.bulkTargets = targets
+	f.bulkOwners = owners
+	for _, p := range f.bulkProgress {
+		if progress != nil {
+			progress(p)
+		}
+	}
 	return f.bulkResult, f.bulkErr
 }
 

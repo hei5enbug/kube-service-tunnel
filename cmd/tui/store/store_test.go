@@ -27,7 +27,7 @@ func TestSetterDoesNotBlockOnListener(t *testing.T) {
 
 		// when
 		go func() {
-			s.SetMessage("hello")
+			s.Notify(LevelInfo, "hello")
 			close(returned)
 		}()
 
@@ -39,25 +39,25 @@ func TestSetterDoesNotBlockOnListener(t *testing.T) {
 		}
 		close(release)
 		<-entered
-		if got := s.GetState().Message; got != "hello" {
-			t.Fatalf("message = %q, want hello", got)
+		if got := s.GetState().Status.Text; got != "hello" {
+			t.Fatalf("status = %q, want hello", got)
 		}
 	})
 
 	t.Run("리스너 안에서 세터를 호출해도 교착하지 않는다", func(t *testing.T) {
 		// given
-		s := NewStore()
+		s := NewStore(WithStatusTTL(0))
 		done := make(chan struct{})
 		s.Subscribe(func(st State) {
-			if st.Message == "first" {
-				s.SetMessage("second")
+			if st.Status.Text == "first" {
+				s.Notify(LevelInfo, "second")
 				return
 			}
 			close(done)
 		})
 
 		// when
-		s.SetMessage("first")
+		s.Notify(LevelInfo, "first")
 
 		// then
 		select {
@@ -79,7 +79,7 @@ func TestListenerOrdering(t *testing.T) {
 		s.Subscribe(func(st State) {
 			mu.Lock()
 			defer mu.Unlock()
-			seen = append(seen, st.Message)
+			seen = append(seen, st.Status.Text)
 			if len(seen) == total {
 				close(done)
 			}
@@ -91,7 +91,7 @@ func TestListenerOrdering(t *testing.T) {
 
 		// when
 		for _, message := range want {
-			s.SetMessage(message)
+			s.Notify(LevelInfo, message)
 		}
 
 		// then
@@ -137,7 +137,7 @@ func TestListenerOrdering(t *testing.T) {
 			go func(w int) {
 				defer wg.Done()
 				for i := 0; i < perWriter; i++ {
-					s.SetMessage(fmt.Sprintf("w%d-%d", w, i))
+					s.Notify(LevelInfo, fmt.Sprintf("w%d-%d", w, i))
 				}
 			}(w)
 		}
@@ -161,7 +161,7 @@ func TestTryBeginLoading(t *testing.T) {
 		s := NewStore()
 
 		// when
-		began := s.TryBeginLoading()
+		began := s.TryBeginLoading("loading")
 
 		// then
 		if !began || !s.GetState().IsLoading {
@@ -172,10 +172,10 @@ func TestTryBeginLoading(t *testing.T) {
 	t.Run("이미 로딩 중이면 false를 돌려준다", func(t *testing.T) {
 		// given
 		s := NewStore()
-		s.TryBeginLoading()
+		s.TryBeginLoading("loading")
 
 		// when
-		began := s.TryBeginLoading()
+		began := s.TryBeginLoading("loading")
 
 		// then
 		if began {
@@ -194,7 +194,7 @@ func TestTryBeginLoading(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if s.TryBeginLoading() {
+				if s.TryBeginLoading("loading") {
 					atomic.AddInt32(&winners, 1)
 				}
 			}()
@@ -210,11 +210,11 @@ func TestTryBeginLoading(t *testing.T) {
 	t.Run("로딩을 끝낸 뒤에는 다시 시작할 수 있다", func(t *testing.T) {
 		// given
 		s := NewStore()
-		s.TryBeginLoading()
+		s.TryBeginLoading("loading")
 		s.SetLoading(false)
 
 		// when
-		began := s.TryBeginLoading()
+		began := s.TryBeginLoading("loading")
 
 		// then
 		if !began {

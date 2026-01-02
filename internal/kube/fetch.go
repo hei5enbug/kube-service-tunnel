@@ -7,47 +7,47 @@ import (
 	"sync"
 )
 
-type contextFetch struct {
-	services map[string][]Service
-	errs     []error
+// ContextResources holds the services discovered in one context. Namespaces keeps whatever was found even
+// when Err reports partial failures.
+type ContextResources struct {
+	Namespaces map[string][]Service
+	Err        error
 }
 
-func (m *kubeAdapter) FetchAllResources(ctx context.Context) (map[string]map[string][]Service, error) {
+func (m *kubeAdapter) FetchAllResources(ctx context.Context) (map[string]ContextResources, error) {
 	contexts, err := m.ListContexts(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	fetches := make([]contextFetch, len(contexts))
+	fetches := make([]ContextResources, len(contexts))
 	var wg sync.WaitGroup
 	for i, c := range contexts {
 		wg.Add(1)
 		go func(index int, contextName string) {
 			defer wg.Done()
-			fetches[index] = m.fetchContext(ctx, contextName)
+			fetches[index] = m.FetchContextResources(ctx, contextName)
 		}(i, c.Name)
 	}
 	wg.Wait()
 
-	resourceMap := make(map[string]map[string][]Service, len(contexts))
-	var errs []error
+	resources := make(map[string]ContextResources, len(contexts))
 	for i, c := range contexts {
-		resourceMap[c.Name] = fetches[i].services
-		errs = append(errs, fetches[i].errs...)
+		resources[c.Name] = fetches[i]
 	}
-
-	return resourceMap, errors.Join(errs...)
+	return resources, nil
 }
 
-func (m *kubeAdapter) fetchContext(ctx context.Context, contextName string) contextFetch {
+func (m *kubeAdapter) FetchContextResources(ctx context.Context, contextName string) ContextResources {
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
-	result := contextFetch{services: make(map[string][]Service)}
+	result := ContextResources{Namespaces: make(map[string][]Service)}
+	var errs []error
 
 	namespaces, err := m.ListNamespaces(ctx, contextName)
 	if err != nil {
-		result.errs = append(result.errs, fmt.Errorf("context %s: %w", contextName, err))
+		result.Err = fmt.Errorf("context %s: %w", contextName, err)
 		return result
 	}
 
@@ -57,13 +57,14 @@ func (m *kubeAdapter) fetchContext(ctx context.Context, contextName string) cont
 		}
 		services, err := m.ListServices(ctx, ns, contextName)
 		if err != nil {
-			result.errs = append(result.errs, fmt.Errorf("context %s namespace %s: %w", contextName, ns, err))
+			errs = append(errs, fmt.Errorf("context %s namespace %s: %w", contextName, ns, err))
 			continue
 		}
 		if len(services) > 0 {
-			result.services[ns] = services
+			result.Namespaces[ns] = services
 		}
 	}
 
+	result.Err = errors.Join(errs...)
 	return result
 }
