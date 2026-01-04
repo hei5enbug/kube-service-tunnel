@@ -11,7 +11,10 @@ import (
 type fakeKube struct {
 	mu            sync.Mutex
 	registerCalls int
-	registerFn    func(contextName, serviceName, namespace string) (kube.ServiceTunnel, error)
+	registerFn    func(contextName string, target kube.ServiceRef) (kube.ServiceTunnel, error)
+	registerSeen  []kube.ServiceRef
+	startFn       func(pod string, remotePort, localPort int32) (string, error)
+	starts        []startedForward
 	bulkResult    kube.RegisterAllResult
 	bulkErr       error
 	bulkOwners    map[string]string
@@ -19,6 +22,7 @@ type fakeKube struct {
 	bulkContext   string
 	bulkProgress  []kube.RegistrationProgress
 	stopped       []string
+	stopErr       error
 	stopAllCalls  int
 	lostHandler   func(forwardKey string, err error)
 }
@@ -70,23 +74,49 @@ func (f *fakeKube) RegisterServicesForContext(
 }
 
 func (f *fakeKube) RegisterServicePortForward(
-	ctx context.Context, contextName, serviceName, namespace string, usedPorts map[int32]bool,
+	ctx context.Context, contextName string, target kube.ServiceRef, usedPorts map[int32]bool,
 ) (kube.ServiceTunnel, error) {
 	f.mu.Lock()
 	f.registerCalls++
+	f.registerSeen = append(f.registerSeen, target)
 	fn := f.registerFn
 	f.mu.Unlock()
 	if fn == nil {
 		return kube.ServiceTunnel{}, fmt.Errorf("unexpected register call")
 	}
-	return fn(contextName, serviceName, namespace)
+	return fn(contextName, target)
+}
+
+type startedForward struct {
+	contextName string
+	namespace   string
+	pod         string
+	remotePort  int32
+	localPort   int32
+}
+
+func (f *fakeKube) StartForward(ctx context.Context, contextName, namespace, pod string, remotePort, localPort int32) (string, error) {
+	f.mu.Lock()
+	fn := f.startFn
+	f.starts = append(f.starts, startedForward{contextName, namespace, pod, remotePort, localPort})
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(pod, remotePort, localPort)
+	}
+	return fmt.Sprintf("fwd-%s-%d", pod, localPort), nil
+}
+
+func (f *fakeKube) startedForwards() []startedForward {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]startedForward(nil), f.starts...)
 }
 
 func (f *fakeKube) UnregisterServicePortForward(forwardKey string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, forwardKey)
-	return nil
+	return f.stopErr
 }
 
 func (f *fakeKube) stoppedKeys() []string {
@@ -189,22 +219,38 @@ func (p *fakeProxy) hasRoute(host string) bool {
 }
 
 func tunnelFor(contextName, serviceName, namespace string, localPort int32) kube.ServiceTunnel {
-	dnsURL := kube.BuildServiceDNS(serviceName, namespace)
+	return tunnelForTarget(contextName, kube.ServiceRef{Namespace: namespace, Name: serviceName}, localPort)
+}
+
+func tunnelForTarget(contextName string, target kube.ServiceRef, localPort int32) kube.ServiceTunnel {
+	dnsURL := target.EffectiveHostname()
 	return kube.ServiceTunnel{
-		Context:    contextName,
-		Namespace:  namespace,
-		DNSURL:     dnsURL,
-		Pod:        serviceName + "-pod",
-		LocalPort:  localPort,
-		RemotePort: 80,
-		ForwardKey: "key-" + dnsURL,
+		Context:            contextName,
+		Namespace:          target.Namespace,
+		Service:            target.Name,
+		DNSURL:             dnsURL,
+		Pod:                target.Name + "-pod",
+		LocalPort:          localPort,
+		RequestedLocalPort: target.LocalPort,
+		RemotePort:         80,
+		ForwardKey:         "key-" + dnsURL,
 	}
 }
 
 func newTestManager() (*DNSManager, *fakeKube, *fakeHosts, *fakeProxy) {
 	k, h, p := &fakeKube{}, newFakeHosts(), newFakeProxy()
-	k.registerFn = func(contextName, serviceName, namespace string) (kube.ServiceTunnel, error) {
-		return tunnelFor(contextName, serviceName, namespace, 40000), nil
+	k.registerFn = func(contextName string, target kube.ServiceRef) (kube.ServiceTunnel, error) {
+		port := target.LocalPort
+		if port == 0 {
+			port = 40000
+		}
+		return tunnelForTarget(contextName, target, port), nil
 	}
 	return newDNSManager(k, h, p), k, h, p
+}
+
+func (p *fakeProxy) routePort(host string) int32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.routes[host]
 }

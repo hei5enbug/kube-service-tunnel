@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,9 +13,14 @@ import (
 )
 
 type registerCall struct {
-	Context   string
-	Service   string
-	Namespace string
+	Context string
+	Target  kube.ServiceRef
+}
+
+type updateCall struct {
+	DNSURL    string
+	Hostname  string
+	LocalPort int32
 }
 
 type bulkCall struct {
@@ -22,17 +28,23 @@ type bulkCall struct {
 	Targets []kube.ServiceRef
 }
 
+// fakeManager applies registrations and updates to its tunnel list. busyFallback, when set, is the port it uses
+// instead of any requested local port. updateErr fails an update, except that an error wrapping
+// dns.ErrUpdateCleanup still applies it.
 type fakeManager struct {
-	mu          sync.Mutex
-	tunnels     []dns.DNSTunnel
-	registers   []registerCall
-	bulks       []bulkCall
-	unregisters []string
-	lost        func(dns.DNSTunnel, error)
-	registerErr error
-	bulkGate    chan struct{}
-	bulkResult  dns.BulkRegistrationResult
-	bulkErr     error
+	mu           sync.Mutex
+	tunnels      []dns.DNSTunnel
+	registers    []registerCall
+	updates      []updateCall
+	bulks        []bulkCall
+	unregisters  []string
+	lost         func(dns.DNSTunnel, error)
+	registerErr  error
+	busyFallback int32
+	updateErr    error
+	bulkGate     chan struct{}
+	bulkResult   dns.BulkRegistrationResult
+	bulkErr      error
 }
 
 func (m *fakeManager) GetAllDNSTunnels() []dns.DNSTunnel {
@@ -60,15 +72,40 @@ func (m *fakeManager) RegisterServices(ctx context.Context, contextName string, 
 	return result, err
 }
 
-func (m *fakeManager) RegisterDNSTunnel(_ context.Context, contextName, serviceName, namespace string) error {
+func (m *fakeManager) RegisterDNSTunnel(_ context.Context, contextName string, target kube.ServiceRef) (dns.DNSTunnel, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.registers = append(m.registers, registerCall{Context: contextName, Service: serviceName, Namespace: namespace})
+	m.registers = append(m.registers, registerCall{Context: contextName, Target: target})
 	if m.registerErr != nil {
-		return m.registerErr
+		return dns.DNSTunnel{}, m.registerErr
 	}
-	m.tunnels = append(m.tunnels, tunnel(contextName, namespace, serviceName))
-	return nil
+	registered := withLocalPort(tunnelAt(contextName, target.Namespace, target.Name, target.EffectiveHostname()), target.LocalPort)
+	if target.LocalPort != 0 && m.busyFallback != 0 {
+		registered.LocalPort = m.busyFallback
+	}
+	m.tunnels = append(slices.Clone(m.tunnels), registered)
+	return registered, nil
+}
+
+func (m *fakeManager) UpdateTunnel(_ context.Context, dnsURL, hostname string, localPort int32) (dns.DNSTunnel, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updates = append(m.updates, updateCall{DNSURL: dnsURL, Hostname: hostname, LocalPort: localPort})
+	index := slices.IndexFunc(m.tunnels, func(t dns.DNSTunnel) bool { return t.DNSURL == dnsURL })
+	if index < 0 {
+		return dns.DNSTunnel{}, fmt.Errorf("tunnel not found for DNS URL: %s", dnsURL)
+	}
+	if m.updateErr != nil && !errors.Is(m.updateErr, dns.ErrUpdateCleanup) {
+		return dns.DNSTunnel{}, m.updateErr
+	}
+	old := m.tunnels[index]
+	updated := old
+	updated.DNSURL = kube.ServiceRef{Namespace: old.Namespace, Name: old.Service, Hostname: hostname}.EffectiveHostname()
+	if localPort != 0 || old.RequestedLocalPort != 0 {
+		updated = withLocalPort(updated, localPort)
+	}
+	m.tunnels = slices.Replace(slices.Clone(m.tunnels), index, index+1, updated)
+	return updated, m.updateErr
 }
 
 func (m *fakeManager) UnregisterDNSTunnel(dnsURL string) error {
@@ -109,23 +146,41 @@ func (m *fakeManager) bulkCalls() []bulkCall {
 	return slices.Clone(m.bulks)
 }
 
+func (m *fakeManager) updateCalls() []updateCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.updates)
+}
+
 func (m *fakeManager) registerCalls() []registerCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return slices.Clone(m.registers)
 }
 
+// tunnel is a tunnel with the default hostname and an automatic local port.
 func tunnel(contextName, namespace, serviceName string) dns.DNSTunnel {
-	dnsURL := kube.BuildServiceDNS(serviceName, namespace)
+	return tunnelAt(contextName, namespace, serviceName, kube.BuildServiceDNS(serviceName, namespace))
+}
+
+func tunnelAt(contextName, namespace, serviceName, hostname string) dns.DNSTunnel {
 	return dns.DNSTunnel{
 		Context:    contextName,
 		Namespace:  namespace,
-		DNSURL:     dnsURL,
+		Service:    serviceName,
+		DNSURL:     hostname,
 		Pod:        serviceName + "-7d9f8b6c5-x2k4q",
 		LocalPort:  40000,
 		RemotePort: 8080,
-		ForwardKey: contextName + "/" + dnsURL,
+		ForwardKey: contextName + "/" + hostname,
 	}
+}
+
+// withLocalPort returns the tunnel listening on the requested port, or on 40000 when the port is automatic.
+func withLocalPort(t dns.DNSTunnel, requested int32) dns.DNSTunnel {
+	t.RequestedLocalPort = requested
+	t.LocalPort = cmp.Or(requested, 40000)
+	return t
 }
 
 type fakeKube struct {
@@ -169,8 +224,12 @@ func (k *fakeKube) RegisterServicesForContext(context.Context, string, []kube.Se
 	return kube.RegisterAllResult{}, nil
 }
 
-func (k *fakeKube) RegisterServicePortForward(context.Context, string, string, string, map[int32]bool) (kube.ServiceTunnel, error) {
+func (k *fakeKube) RegisterServicePortForward(context.Context, string, kube.ServiceRef, map[int32]bool) (kube.ServiceTunnel, error) {
 	return kube.ServiceTunnel{}, nil
+}
+
+func (k *fakeKube) StartForward(context.Context, string, string, string, int32, int32) (string, error) {
+	return "", nil
 }
 
 func (k *fakeKube) UnregisterServicePortForward(string) error { return nil }

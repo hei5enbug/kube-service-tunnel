@@ -110,6 +110,20 @@ func (t Theme) buttonStyle() tcell.Style {
 	return tcell.StyleDefault.Foreground(t.Text).Background(t.Border)
 }
 
+// fieldStyle underlines input fields so their extent shows in every theme.
+func (t Theme) fieldStyle() tcell.Style {
+	return t.textStyle().Underline(true)
+}
+
+func (t Theme) placeholderStyle() tcell.Style {
+	return t.dimStyle().Underline(true)
+}
+
+// focusedLabelStyle marks the label of the focused input field by weight as well as color.
+func (t Theme) focusedLabelStyle() tcell.Style {
+	return t.style(t.FocusBorder).Bold(true)
+}
+
 func (t Theme) levelColor(level store.Level) tcell.Color {
 	switch level {
 	case store.LevelSuccess:

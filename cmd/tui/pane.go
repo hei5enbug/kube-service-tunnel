@@ -119,6 +119,17 @@ func (p *pane) rememberCursor() {
 	p.cursorKey, p.cursorIndex, p.hasCursor = p.keys[index], index, true
 }
 
+// renameKey makes the next render keep the cursor on a row whose identity key changed from old to renamed.
+func (p *pane) renameKey(old, renamed string) {
+	index := slices.Index(p.keys, old)
+	if index < 0 {
+		return
+	}
+	keys := slices.Clone(p.keys)
+	keys[index] = renamed
+	p.keys = keys
+}
+
 func (p *pane) cursorTarget(active string) int {
 	if p.hasCursor {
 		if index := slices.Index(p.keys, p.cursorKey); index >= 0 {

@@ -102,8 +102,11 @@ func serviceDetails(row serviceRow) []detail {
 		eligibility = row.Reason
 	}
 	registered := "no"
-	if row.Owner != "" {
-		registered = fmt.Sprintf("yes, context %s (http://%s)", row.Owner, row.DNSName())
+	switch {
+	case row.Registered:
+		registered = "yes, " + tunnelURL(row.Tunnel)
+	case row.NameUser != "":
+		registered = fmt.Sprintf("no, http://%s is used by context %s", row.Hostname(), row.NameUser)
 	}
 	return []detail{
 		{"Service", svc.Name},
@@ -155,10 +158,31 @@ func selectorText(selector map[string]string) string {
 func tunnelDetails(tunnel dns.DNSTunnel) []detail {
 	return []detail{
 		{"URL", tunnelURL(tunnel)},
+		{"Service", tunnelLabel(tunnel)},
+		{"Hostname", hostnameText(tunnel)},
+		{"Local port", localPortText(tunnel)},
 		{"Context", tunnel.Context},
 		{"Namespace", tunnel.Namespace},
 		{"Pod", tunnel.Pod},
-		{"Local", fmt.Sprintf("127.0.0.1:%d", tunnel.LocalPort)},
 		{"Pod port", strconv.Itoa(int(tunnel.RemotePort))},
+	}
+}
+
+func hostnameText(tunnel dns.DNSTunnel) string {
+	if tunnel.DNSURL == defaultTunnelHostname(tunnel) {
+		return tunnel.DNSURL + " (default)"
+	}
+	return tunnel.DNSURL + " (custom)"
+}
+
+func localPortText(tunnel dns.DNSTunnel) string {
+	address := localAddress(tunnel.LocalPort)
+	switch tunnel.RequestedLocalPort {
+	case 0:
+		return address + " (auto)"
+	case tunnel.LocalPort:
+		return address + " (set)"
+	default:
+		return fmt.Sprintf("%s (set to %d, which was busy)", address, tunnel.RequestedLocalPort)
 	}
 }

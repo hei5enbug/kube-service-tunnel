@@ -1,11 +1,5 @@
 package dns
 
-import (
-	"strings"
-
-	"github.com/byoungmin/kube-service-tunnel/internal/kube"
-)
-
 func (m *DNSManager) getUsedPorts() map[int32]bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -47,6 +41,40 @@ func (m *DNSManager) removeTunnel(dnsURL string) {
 	m.dnsTunnels = remaining
 }
 
+func (m *DNSManager) usedPortsExcept(forwardKey string) map[int32]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	usedPorts := make(map[int32]bool, len(m.dnsTunnels))
+	for _, t := range m.dnsTunnels {
+		if t.ForwardKey != forwardKey {
+			usedPorts[t.LocalPort] = true
+		}
+	}
+	return usedPorts
+}
+
+// replaceTunnel swaps the record with the given forward key for updated, keeping its list position.
+func (m *DNSManager) replaceTunnel(forwardKey string, updated DNSTunnel) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	replaced := make([]DNSTunnel, len(m.dnsTunnels))
+	for i, t := range m.dnsTunnels {
+		if t.ForwardKey == forwardKey {
+			t = updated
+		}
+		replaced[i] = t
+	}
+	m.dnsTunnels = replaced
+}
+
+func (m *DNSManager) findByIdentity(contextName, namespace, service string) (DNSTunnel, bool) {
+	return m.find(func(t DNSTunnel) bool {
+		return t.Context == contextName && t.Namespace == namespace && t.Service == service
+	})
+}
+
 func (m *DNSManager) findByDNS(dnsURL string) (DNSTunnel, bool) {
 	return m.find(func(t DNSTunnel) bool { return t.DNSURL == dnsURL })
 }
@@ -65,8 +93,4 @@ func (m *DNSManager) find(match func(DNSTunnel) bool) (DNSTunnel, bool) {
 		}
 	}
 	return DNSTunnel{}, false
-}
-
-func serviceName(tunnel kube.ServiceTunnel) string {
-	return strings.TrimSuffix(tunnel.DNSURL, "."+strings.ToLower(tunnel.Namespace))
 }

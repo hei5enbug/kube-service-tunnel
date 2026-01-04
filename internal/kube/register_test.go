@@ -235,7 +235,7 @@ func TestRegisterServicePortForward(t *testing.T) {
 		adapter := newTestAdapter(&fakePodClient{}, services, &fakeNamespaceClient{}, &fakePortForwardClient{})
 
 		// when
-		_, err := adapter.RegisterServicePortForward(context.Background(), "ctx", "db", "app", map[int32]bool{})
+		_, err := adapter.RegisterServicePortForward(context.Background(), "ctx", ServiceRef{Namespace: "app", Name: "db"}, map[int32]bool{})
 
 		// then
 		if !errors.Is(err, errNoSupportedHTTPPort) || !strings.Contains(err.Error(), "80, 8080, 3000, 8000, 9000/TCP") {
@@ -250,7 +250,7 @@ func TestRegisterServicePortForward(t *testing.T) {
 		adapter := newTestAdapter(pods, services, &fakeNamespaceClient{}, &fakePortForwardClient{})
 
 		// when
-		_, err := adapter.RegisterServicePortForward(context.Background(), "ctx", "ext", "app", map[int32]bool{})
+		_, err := adapter.RegisterServicePortForward(context.Background(), "ctx", ServiceRef{Namespace: "app", Name: "ext"}, map[int32]bool{})
 
 		// then
 		if !errors.Is(err, errServiceHasNoSelector) || pods.calls != 0 {
@@ -263,7 +263,7 @@ func TestRegisterServicePortForward(t *testing.T) {
 		adapter := newTestAdapter(&fakePodClient{}, &fakeServiceClient{}, &fakeNamespaceClient{}, &fakePortForwardClient{})
 
 		// when
-		_, err := adapter.RegisterServicePortForward(context.Background(), "ctx", "ghost", "app", map[int32]bool{})
+		_, err := adapter.RegisterServicePortForward(context.Background(), "ctx", ServiceRef{Namespace: "app", Name: "ghost"}, map[int32]bool{})
 
 		// then
 		if err == nil || !strings.Contains(err.Error(), "app/ghost") {
@@ -280,7 +280,7 @@ func TestRegisterServicePortForward(t *testing.T) {
 		adapter := newTestAdapter(pods, services, &fakeNamespaceClient{}, &fakePortForwardClient{})
 
 		// when
-		tunnel, err := adapter.RegisterServicePortForward(context.Background(), "ctx", "api", "app", map[int32]bool{})
+		tunnel, err := adapter.RegisterServicePortForward(context.Background(), "ctx", ServiceRef{Namespace: "app", Name: "api"}, map[int32]bool{})
 
 		// then
 		if err != nil || tunnel.DNSURL != "api.app" || tunnel.RemotePort != 9999 || tunnel.Pod != "api-1" || tunnel.ForwardKey == "" {

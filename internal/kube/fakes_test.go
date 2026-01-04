@@ -116,3 +116,7 @@ func newTestAdapter(pods *fakePodClient, services *fakeServiceClient, namespaces
 		},
 	}
 }
+
+func failingClientFactory(string) (*rest.Config, kubernetes.Interface, error) {
+	return nil, nil, fmt.Errorf("no kubeconfig")
+}

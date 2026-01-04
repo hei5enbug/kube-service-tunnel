@@ -17,10 +17,10 @@ func TestPlanBulk(t *testing.T) {
 	t.Run("후보와 등록 불가와 이미 등록된 수와 후보가 있는 네임스페이스 수를 센다", func(t *testing.T) {
 		// given
 		resources := sampleCluster()["dev"]
-		owners := map[string]string{"web.api": "prod"}
+		index := indexTunnels([]dns.DNSTunnel{tunnel("prod", "api", "web")})
 
 		// when
-		plan := planBulk("dev", resources, owners)
+		plan := planBulk("dev", resources, nil, index)
 
 		// then
 		want := []kube.ServiceRef{{Namespace: "api", Name: "admin"}, {Namespace: "api", Name: "website"}, {Namespace: "default", Name: "hello"}}
@@ -29,6 +29,30 @@ func TestPlanBulk(t *testing.T) {
 		}
 		if plan.Namespaces != 2 || plan.NotRegistrable != 2 || plan.AlreadyRegistered != 1 {
 			t.Fatalf("plan = %+v", plan)
+		}
+	})
+
+	t.Run("자기 터널과 다른 터널이 쓰는 이름은 이미 등록된 것으로 빼고 대상에는 기억한 설정을 담는다", func(t *testing.T) {
+		// given
+		resources := sampleCluster()["dev"]
+		settings := map[string]store.TunnelSetting{
+			store.SettingKey("dev", "api", "website"):   {Hostname: "shop.local"},
+			store.SettingKey("dev", "default", "hello"): {Hostname: "hello.local", LocalPort: 8081},
+		}
+		index := indexTunnels([]dns.DNSTunnel{tunnelAt("dev", "api", "admin", "admin.local"), tunnelAt("prod", "shop", "cart", "shop.local")})
+
+		// when
+		plan := planBulk("dev", resources, settings, index)
+
+		// then
+		want := []kube.ServiceRef{{Namespace: "api", Name: "web"}, {Namespace: "default", Name: "hello", Hostname: "hello.local", LocalPort: 8081}}
+		if !slices.Equal(plan.Targets, want) || plan.AlreadyRegistered != 2 {
+			t.Fatalf("plan = %+v", plan)
+		}
+		for _, reason := range []string{"already registered as http://admin.local", "name http://shop.local is used by context prod"} {
+			if !slices.ContainsFunc(plan.Excluded, func(f kube.ServiceRegistrationFailure) bool { return f.Reason == reason }) {
+				t.Fatalf("excluded %+v lack %q", plan.Excluded, reason)
+			}
 		}
 	})
 

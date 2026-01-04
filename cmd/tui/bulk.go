@@ -22,24 +22,27 @@ type bulkPlan struct {
 	Excluded []kube.ServiceRegistrationFailure
 }
 
-func planBulk(contextName string, resources kube.ContextResources, owners map[string]string) bulkPlan {
+// planBulk sorts the services of a context the way the Services pane marks them: a service with a tunnel and
+// a service whose hostname another tunnel uses both count as already registered. Targets carry the
+// remembered setting of each service.
+func planBulk(contextName string, resources kube.ContextResources, settings map[string]store.TunnelSetting, index tunnelIndex) bulkPlan {
 	plan := bulkPlan{Context: contextName}
 	for _, namespace := range slices.Sorted(maps.Keys(resources.Namespaces)) {
-		services := resources.Namespaces[namespace]
 		candidates := 0
-		for i := range services {
-			svc := services[i]
-			_, reason := kube.Eligibility(&svc)
-			owner := owners[kube.BuildServiceDNS(svc.Name, svc.Namespace)]
+		for _, svc := range resources.Namespaces[namespace] {
+			row := newServiceRow(contextName, svc, settings, index)
 			switch {
-			case reason != "":
-				plan.NotRegistrable++
-				plan.Excluded = append(plan.Excluded, excluded(svc, reason))
-			case owner != "":
+			case row.Registered:
 				plan.AlreadyRegistered++
-				plan.Excluded = append(plan.Excluded, excluded(svc, fmt.Sprintf("already registered (context %s)", owner)))
+				plan.Excluded = append(plan.Excluded, excluded(svc, "already registered as "+tunnelURL(row.Tunnel)))
+			case row.NameUser != "":
+				plan.AlreadyRegistered++
+				plan.Excluded = append(plan.Excluded, excluded(svc, fmt.Sprintf("name http://%s is used by context %s", row.Hostname(), row.NameUser)))
+			case row.Reason != "":
+				plan.NotRegistrable++
+				plan.Excluded = append(plan.Excluded, excluded(svc, row.Reason))
 			default:
-				plan.Targets = append(plan.Targets, kube.ServiceRef{Namespace: svc.Namespace, Name: svc.Name})
+				plan.Targets = append(plan.Targets, row.Target)
 				candidates++
 			}
 		}
@@ -81,7 +84,8 @@ func (a *App) confirmBulk() {
 		a.store.Notify(store.LevelInfo, "No context under the cursor")
 		return
 	}
-	plan := planBulk(row.Name, a.store.GetState().Resources[row.Name], tunnelOwners(a.tunnels))
+	state := a.store.GetState()
+	plan := planBulk(row.Name, state.Resources[row.Name], state.TunnelSettings, indexTunnels(a.tunnels))
 	if len(plan.Targets) == 0 {
 		a.store.Notify(store.LevelWarning, nothingToRegisterText(plan))
 		return
@@ -115,27 +119,43 @@ func progressLabel(contextName string, p kube.RegistrationProgress) string {
 }
 
 // bulkReport builds one event for a bulk run: the summary on the first line, then one line for each service the
-// plan excluded and each skipped, not registrable or failed service, so the run counts once in the unread total.
+// plan excluded, each skipped, not registrable or failed service, and each tunnel whose requested local port was
+// busy, so the run counts once in the unread total. A busy port makes a successful run a warning.
 func bulkReport(plan bulkPlan, result dns.BulkRegistrationResult, err error) (store.Level, string) {
 	level, summary := bulkSummary(plan.Context, len(plan.Targets), result, err)
 	if n := len(plan.Excluded); n > 0 {
 		summary += fmt.Sprintf(" · %d excluded before start", n)
 	}
-	details := append(failureLines("excluded", plan.Context, plan.Excluded), bulkDetails(plan.Context, result, err)...)
+	busy := busyPortLines(plan.Context, result.Registered)
+	if len(busy) > 0 {
+		level = max(level, store.LevelWarning)
+	}
+	details := append(failureLines("excluded", plan.Context, plan.Excluded), bulkDetails(plan.Context, result, busy, err)...)
 	if len(details) == 0 {
 		return level, summary
 	}
 	return level, summary + "\n" + strings.Join(details, "\n")
 }
 
-func bulkDetails(contextName string, result dns.BulkRegistrationResult, err error) []string {
+func bulkDetails(contextName string, result dns.BulkRegistrationResult, busy []string, err error) []string {
 	details := failureLines("skipped", contextName, result.Skipped)
 	details = append(details, failureLines("not registrable", contextName, result.Ineligible)...)
 	details = append(details, failureLines("failed", contextName, result.Failures)...)
+	details = append(details, busy...)
 	if err != nil {
 		details = append(details, "error: "+err.Error())
 	}
 	return details
+}
+
+func busyPortLines(contextName string, tunnels []dns.DNSTunnel) []string {
+	var lines []string
+	for _, tunnel := range tunnels {
+		if fallback, busy := portFallback(tunnel); busy {
+			lines = append(lines, fmt.Sprintf("port %s %s/%s: %s", contextName, tunnel.Namespace, tunnel.Service, fallback))
+		}
+	}
+	return lines
 }
 
 func failureLines(label, contextName string, failures []kube.ServiceRegistrationFailure) []string {

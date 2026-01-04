@@ -32,6 +32,8 @@ type State struct {
 	History           []Event
 	Unread            int
 	Focus             FocusArea
+	// TunnelSettings is replaced, never changed in place, so a state copy may share it.
+	TunnelSettings map[string]TunnelSetting
 }
 
 type delivery struct {

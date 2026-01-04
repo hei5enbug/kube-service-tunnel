@@ -69,6 +69,8 @@ func (a *App) handleTableRune(p *pane, r rune) bool {
 		a.refreshActiveContext()
 	case '?':
 		a.showHelp()
+	case 'e':
+		return a.onlyIn(p, store.FocusTunnels, a.editTunnel)
 	case 'd':
 		return a.onlyIn(p, store.FocusTunnels, a.deleteTunnel)
 	case 'c':

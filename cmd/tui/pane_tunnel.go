@@ -23,14 +23,6 @@ func tunnelURL(tunnel dns.DNSTunnel) string {
 	return "http://" + tunnel.DNSURL
 }
 
-func tunnelOwners(tunnels []dns.DNSTunnel) map[string]string {
-	owners := make(map[string]string, len(tunnels))
-	for _, tunnel := range tunnels {
-		owners[tunnel.DNSURL] = tunnel.Context
-	}
-	return owners
-}
-
 func sortedTunnels(tunnels []dns.DNSTunnel) []dns.DNSTunnel {
 	sorted := slices.Clone(tunnels)
 	slices.SortFunc(sorted, func(x, y dns.DNSTunnel) int { return cmp.Compare(x.DNSURL, y.DNSURL) })
@@ -39,7 +31,9 @@ func sortedTunnels(tunnels []dns.DNSTunnel) []dns.DNSTunnel {
 
 // refreshTunnelViews reloads the tunnel list and re-renders everything that shows registration state.
 func (a *App) refreshTunnelViews() {
-	a.tunnels = sortedTunnels(a.manager.GetAllDNSTunnels())
+	next := sortedTunnels(a.manager.GetAllDNSTunnels())
+	a.followRenamedTunnel(next)
+	a.tunnels = next
 	a.renderServices()
 	a.renderTunnels()
 	a.renderHeader()
@@ -87,6 +81,26 @@ func tunnelView(rows []dns.DNSTunnel, inner int, withPod bool) tableView {
 		view.keys = append(view.keys, row.DNSURL)
 	}
 	return view
+}
+
+// followRenamedTunnel keeps the Tunnels cursor on the tunnel under it when its DNS URL changed, matching the
+// tunnel by its service. It clears the Tunnels filter when the new name no longer matches it, so the row stays
+// visible.
+func (a *App) followRenamedTunnel(next []dns.DNSTunnel) {
+	current, ok := a.selectedTunnel()
+	if !ok || slices.ContainsFunc(next, func(t dns.DNSTunnel) bool { return t.DNSURL == current.DNSURL }) {
+		return
+	}
+	key := tunnelSettingKey(current)
+	index := slices.IndexFunc(next, func(t dns.DNSTunnel) bool { return tunnelSettingKey(t) == key })
+	if index < 0 {
+		return
+	}
+	p := a.pane(store.FocusTunnels)
+	p.renameKey(current.DNSURL, next[index].DNSURL)
+	if !matchFilter(p.filter, tunnelURL(next[index]), next[index].Context) {
+		p.filter = ""
+	}
 }
 
 func (a *App) selectedTunnel() (dns.DNSTunnel, bool) {

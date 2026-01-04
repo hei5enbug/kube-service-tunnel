@@ -41,7 +41,7 @@ func TestRegisterService(t *testing.T) {
 
 		// then
 		running.waitStatus(t, "Port forwarding started: http://web.api")
-		want := []registerCall{{Context: "dev", Service: "web", Namespace: "api"}}
+		want := []registerCall{{Context: "dev", Target: kube.ServiceRef{Namespace: "api", Name: "web"}}}
 		if got := running.manager.registerCalls(); !slices.Equal(got, want) {
 			t.Fatalf("register calls = %v", got)
 		}
@@ -58,7 +58,10 @@ func TestRegisterService(t *testing.T) {
 		want    string
 	}{
 		{"등록할 수 없는 서비스는 매니저를 부르지 않고 이유를 알린다", nil, serviceKey("api", "grpc"), "api/grpc cannot be registered: no HTTP port"},
-		{"다른 컨텍스트가 가진 이름은 소유 컨텍스트를 밝히며 거절한다", []dns.DNSTunnel{tunnel("prod", "api", "web")}, serviceKey("api", "web"), "http://web.api is already registered (context prod)"},
+		{"다른 컨텍스트의 터널이 쓰는 이름은 그 컨텍스트를 밝히며 거절한다", []dns.DNSTunnel{tunnel("prod", "api", "web")}, serviceKey("api", "web"),
+			"http://web.api is used by context prod. Rename that tunnel with e in Tunnels first."},
+		{"이미 터널이 있는 서비스는 그 주소를 밝히며 거절한다", []dns.DNSTunnel{tunnelAt("dev", "api", "web", "api.local")}, serviceKey("api", "web"),
+			"dev api/web is already registered as http://api.local"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,7 +190,9 @@ func TestDetails(t *testing.T) {
 		{"Service 상세는 포트와 선택자와 자격을 보여 준다", "3", func(t *testing.T, r *runningApp) {
 			r.moveCursorTo(t, store.FocusServices, serviceKey("api", "ext"))
 		}, []string{"ClusterIP", "10.0.0.10", "http: port 80, targetPort 80, TCP", "Selector", "none", "no selector"}},
-		{"Tunnel 상세는 로컬 주소와 파드 포트를 보여 준다", "4", nil, []string{"http://web.api", "web-7d9f8b6c5-x2k4q", "127.0.0.1:40000", "8080"}},
+		{"Tunnel 상세는 서비스와 이름과 로컬 포트와 파드 포트를 보여 준다", "4", nil, []string{
+			"http://web.api", "dev api/web", "web.api (default)", "127.0.0.1:40000 (auto)", "web-7d9f8b6c5-x2k4q", "8080",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

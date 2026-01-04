@@ -68,6 +68,8 @@ func (m *DNSManager) SetTunnelLostHandler(handler func(tunnel DNSTunnel, err err
 
 // RegisterServices registers the given services of one context in bulk. progress, when non-nil, is called
 // synchronously while the manager operation lock is held, so it must not call back into the manager.
+// Targets with an invalid hostname or local port become failures, and targets whose service already has a
+// tunnel become skipped; neither reaches the kube adapter.
 func (m *DNSManager) RegisterServices(ctx context.Context, contextName string, targets []kube.ServiceRef, progress func(kube.RegistrationProgress)) (BulkRegistrationResult, error) {
 	if contextName == "" {
 		return BulkRegistrationResult{}, errors.New("context name is required")
@@ -79,16 +81,50 @@ func (m *DNSManager) RegisterServices(ctx context.Context, contextName string, t
 		return BulkRegistrationResult{}, errShuttingDown
 	}
 
-	result, err := m.kubeAdapter.RegisterServicesForContext(ctx, contextName, targets, m.getUsedPorts(), m.registeredOwners(), progress)
+	pending, rejected := m.screenTargets(contextName, targets)
+	if len(targets) > 0 && len(pending) == 0 {
+		return rejected, nil
+	}
+
+	result, err := m.kubeAdapter.RegisterServicesForContext(ctx, contextName, pending, m.getUsedPorts(), m.registeredOwners(), progress)
 	if err != nil {
-		return BulkRegistrationResult{
+		return rejected.merge(BulkRegistrationResult{
 			Failures:   result.Failures,
 			Skipped:    result.Skipped,
 			Ineligible: result.Ineligible,
-		}, errors.Join(err, m.stopForwards(result.Tunnels))
+		}), errors.Join(err, m.stopForwards(result.Tunnels))
 	}
 
-	return m.activateAll(result), nil
+	return rejected.merge(m.activateAll(result)), nil
+}
+
+// screenTargets splits targets into those the kube adapter may register and a result holding the rest.
+func (m *DNSManager) screenTargets(contextName string, targets []kube.ServiceRef) ([]kube.ServiceRef, BulkRegistrationResult) {
+	var rejected BulkRegistrationResult
+	pending := make([]kube.ServiceRef, 0, len(targets))
+	for _, target := range targets {
+		normalized, err := normalizeTarget(target)
+		if err != nil {
+			rejected.Failures = append(rejected.Failures, kube.ServiceRegistrationFailure{Namespace: target.Namespace, Service: target.Name, Reason: err.Error()})
+			continue
+		}
+		if existing, found := m.findByIdentity(contextName, target.Namespace, target.Name); found {
+			reason := "already registered as http://" + existing.DNSURL
+			rejected.Skipped = append(rejected.Skipped, kube.ServiceRegistrationFailure{Namespace: target.Namespace, Service: target.Name, Reason: reason})
+			continue
+		}
+		pending = append(pending, normalized)
+	}
+	return pending, rejected
+}
+
+func (r BulkRegistrationResult) merge(later BulkRegistrationResult) BulkRegistrationResult {
+	return BulkRegistrationResult{
+		Registered: later.Registered,
+		Failures:   append(append([]kube.ServiceRegistrationFailure(nil), r.Failures...), later.Failures...),
+		Skipped:    append(append([]kube.ServiceRegistrationFailure(nil), r.Skipped...), later.Skipped...),
+		Ineligible: later.Ineligible,
+	}
 }
 
 func (m *DNSManager) activateAll(result kube.RegisterAllResult) BulkRegistrationResult {
@@ -114,33 +150,47 @@ func (m *DNSManager) activateAll(result kube.RegisterAllResult) BulkRegistration
 	return BulkRegistrationResult{Registered: registered, Failures: failures, Skipped: result.Skipped, Ineligible: result.Ineligible}
 }
 
-func (m *DNSManager) RegisterDNSTunnel(ctx context.Context, contextName, serviceName, namespace string) error {
-	if contextName == "" || serviceName == "" || namespace == "" {
-		return errors.New("context name, service name and namespace are required")
+// RegisterDNSTunnel opens a tunnel for one service and returns it once it is active. A zero
+// target.Hostname or target.LocalPort selects the defaults; a busy preferred port falls back to an
+// automatic one (see DNSTunnel.RequestedLocalPort).
+func (m *DNSManager) RegisterDNSTunnel(ctx context.Context, contextName string, target kube.ServiceRef) (DNSTunnel, error) {
+	if contextName == "" || target.Name == "" || target.Namespace == "" {
+		return DNSTunnel{}, errors.New("context name, service name and namespace are required")
+	}
+	target, err := normalizeTarget(target)
+	if err != nil {
+		return DNSTunnel{}, err
 	}
 
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	if m.closed {
-		return errShuttingDown
+		return DNSTunnel{}, errShuttingDown
 	}
 
-	dnsURL := kube.BuildServiceDNS(serviceName, namespace)
+	if existing, found := m.findByIdentity(contextName, target.Namespace, target.Name); found {
+		return DNSTunnel{}, fmt.Errorf("%s/%s is already registered as http://%s", target.Namespace, target.Name, existing.DNSURL)
+	}
+	dnsURL := target.EffectiveHostname()
 	if owner, found := m.findByDNS(dnsURL); found {
-		return fmt.Errorf("%s is already registered (context %s)", dnsURL, owner.Context)
+		return DNSTunnel{}, fmt.Errorf("%s is already registered (context %s)", dnsURL, owner.Context)
 	}
 
-	tunnel, err := m.kubeAdapter.RegisterServicePortForward(ctx, contextName, serviceName, namespace, m.getUsedPorts())
+	tunnel, err := m.kubeAdapter.RegisterServicePortForward(ctx, contextName, target, m.getUsedPorts())
 	if err != nil {
-		return err
+		return DNSTunnel{}, err
 	}
 
 	if err := m.proxyAdapter.StartIfNotRunning(proxyPort); err != nil {
 		stopErr := m.stopForwards([]kube.ServiceTunnel{tunnel})
-		return errors.Join(fmt.Errorf("start proxy server: %w", err), stopErr)
+		return DNSTunnel{}, errors.Join(fmt.Errorf("start proxy server: %w", err), stopErr)
 	}
 
-	return m.activate(convertToDNSTunnel(tunnel))
+	dnsTunnel := convertToDNSTunnel(tunnel)
+	if err := m.activate(dnsTunnel); err != nil {
+		return DNSTunnel{}, err
+	}
+	return dnsTunnel, nil
 }
 
 // activate publishes a started forward through the proxy and hosts file, undoing everything on failure.
@@ -257,17 +307,19 @@ func (m *DNSManager) stopForwards(tunnels []kube.ServiceTunnel) error {
 }
 
 func failureOf(tunnel kube.ServiceTunnel, reason string) kube.ServiceRegistrationFailure {
-	return kube.ServiceRegistrationFailure{Namespace: tunnel.Namespace, Service: serviceName(tunnel), Reason: reason}
+	return kube.ServiceRegistrationFailure{Namespace: tunnel.Namespace, Service: tunnel.Service, Reason: reason}
 }
 
 func convertToDNSTunnel(tunnel kube.ServiceTunnel) DNSTunnel {
 	return DNSTunnel{
-		Context:    tunnel.Context,
-		Namespace:  tunnel.Namespace,
-		DNSURL:     tunnel.DNSURL,
-		Pod:        tunnel.Pod,
-		LocalPort:  tunnel.LocalPort,
-		RemotePort: tunnel.RemotePort,
-		ForwardKey: tunnel.ForwardKey,
+		Context:            tunnel.Context,
+		Namespace:          tunnel.Namespace,
+		Service:            tunnel.Service,
+		DNSURL:             tunnel.DNSURL,
+		Pod:                tunnel.Pod,
+		LocalPort:          tunnel.LocalPort,
+		RequestedLocalPort: tunnel.RequestedLocalPort,
+		RemotePort:         tunnel.RemotePort,
+		ForwardKey:         tunnel.ForwardKey,
 	}
 }

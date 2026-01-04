@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -27,18 +28,21 @@ type KubeAdapterInterface interface {
 	StopAllPortForwards()
 	SetPortForwardLostHandler(handler func(forwardKey string, err error))
 	RegisterServicesForContext(ctx context.Context, contextName string, targets []ServiceRef, usedPorts map[int32]bool, owners map[string]string, progress func(RegistrationProgress)) (RegisterAllResult, error)
-	RegisterServicePortForward(ctx context.Context, contextName, serviceName, namespace string, usedPorts map[int32]bool) (ServiceTunnel, error)
+	RegisterServicePortForward(ctx context.Context, contextName string, target ServiceRef, usedPorts map[int32]bool) (ServiceTunnel, error)
+	StartForward(ctx context.Context, contextName, namespace, pod string, remotePort, localPort int32) (string, error)
 	UnregisterServicePortForward(forwardKey string) error
 }
 
 type ServiceTunnel struct {
-	Context    string
-	Namespace  string
-	DNSURL     string
-	Pod        string
-	LocalPort  int32
-	RemotePort int32
-	ForwardKey string
+	Context            string
+	Namespace          string
+	Service            string
+	DNSURL             string
+	Pod                string
+	LocalPort          int32
+	RequestedLocalPort int32
+	RemotePort         int32
+	ForwardKey         string
 }
 
 type ServiceRegistrationFailure struct {
@@ -47,9 +51,21 @@ type ServiceRegistrationFailure struct {
 	Reason    string
 }
 
+// ServiceRef identifies a service to tunnel. A zero Hostname or LocalPort selects the default hostname
+// (service.namespace) or an automatically chosen local port.
 type ServiceRef struct {
 	Namespace string
 	Name      string
+	Hostname  string
+	LocalPort int32
+}
+
+// EffectiveHostname returns the lowercased custom hostname, or the default service DNS name.
+func (r ServiceRef) EffectiveHostname() string {
+	if r.Hostname != "" {
+		return strings.ToLower(r.Hostname)
+	}
+	return BuildServiceDNS(r.Name, r.Namespace)
 }
 
 type RegistrationProgress struct {
@@ -137,4 +153,13 @@ func (m *kubeAdapter) SetPortForwardLostHandler(handler func(forwardKey string, 
 
 func (m *kubeAdapter) UnregisterServicePortForward(forwardKey string) error {
 	return m.portForwardClient.StopPortForward(forwardKey)
+}
+
+// StartForward opens a port forward from 127.0.0.1:localPort to the pod's remotePort and returns its key.
+func (m *kubeAdapter) StartForward(ctx context.Context, contextName, namespace, pod string, remotePort, localPort int32) (string, error) {
+	config, clientset, err := m.newClient(contextName)
+	if err != nil {
+		return "", err
+	}
+	return m.portForwardClient.StartPortForward(ctx, contextName, namespace, pod, localPort, remotePort, config, clientset)
 }

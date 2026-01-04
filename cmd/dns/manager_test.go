@@ -14,12 +14,12 @@ func TestRegisterDNSTunnel(t *testing.T) {
 	t.Run("이미 등록된 호스트 이름은 쿠버네티스를 호출하지 않고 거절한다", func(t *testing.T) {
 		// given
 		manager, kubeFake, _, _ := newTestManager()
-		if err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", "web", "default"); err != nil {
+		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
 			t.Fatalf("first registration failed: %v", err)
 		}
 
 		// when
-		err := manager.RegisterDNSTunnel(context.Background(), "ctx-b", "Web", "default")
+		_, err := manager.RegisterDNSTunnel(context.Background(), "ctx-b", kube.ServiceRef{Namespace: "default", Name: "Web"})
 
 		// then
 		if err == nil || !strings.Contains(err.Error(), "web.default is already registered (context ctx-a)") {
@@ -38,7 +38,7 @@ func TestRegisterDNSTunnel(t *testing.T) {
 		}
 
 		// when
-		err := manager.RegisterDNSTunnel(context.Background(), "ctx", "web", "default")
+		_, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"})
 
 		// then
 		if !errors.Is(err, errShuttingDown) {
@@ -55,7 +55,7 @@ func TestRegisterDNSTunnel(t *testing.T) {
 		hostsFake.addErrs["web.default"] = errors.New("conflict")
 
 		// when
-		err := manager.RegisterDNSTunnel(context.Background(), "ctx", "web", "default")
+		_, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"})
 
 		// then
 		if err == nil || len(manager.GetAllDNSTunnels()) != 0 || proxyFake.hasRoute("web.default") {
@@ -136,7 +136,7 @@ func TestRegisterServices(t *testing.T) {
 	t.Run("이미 등록된 호스트 이름과 소유 컨텍스트의 맵, 대상 목록을 쿠버네티스 어댑터에 넘긴다", func(t *testing.T) {
 		// given
 		manager, kubeFake, _, _ := newTestManager()
-		if err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", "web", "default"); err != nil {
+		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
 			t.Fatalf("registration failed: %v", err)
 		}
 		targets := []kube.ServiceRef{{Namespace: "ns", Name: "a"}}
@@ -252,7 +252,7 @@ func TestUnregisterDNSTunnel(t *testing.T) {
 	t.Run("호스트 항목 제거에 실패하면 모든 상태를 그대로 둔다", func(t *testing.T) {
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
-		if err := manager.RegisterDNSTunnel(context.Background(), "ctx", "web", "default"); err != nil {
+		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
 			t.Fatalf("registration failed: %v", err)
 		}
 		hostsFake.removeErr = errors.New("read-only")
@@ -272,7 +272,7 @@ func TestUnregisterDNSTunnel(t *testing.T) {
 	t.Run("성공하면 호스트 항목, 경로, 포워드, 목록 항목을 모두 제거한다", func(t *testing.T) {
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
-		if err := manager.RegisterDNSTunnel(context.Background(), "ctx", "web", "default"); err != nil {
+		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
 			t.Fatalf("registration failed: %v", err)
 		}
 
@@ -293,7 +293,7 @@ func TestCleanup(t *testing.T) {
 	t.Run("프록시 종료가 실패해도 호스트 항목을 지우고 오류를 합쳐 돌려준다", func(t *testing.T) {
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
-		if err := manager.RegisterDNSTunnel(context.Background(), "ctx", "web", "default"); err != nil {
+		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
 			t.Fatalf("registration failed: %v", err)
 		}
 		proxyFake.stopErr = errors.New("proxy stuck")
@@ -330,7 +330,7 @@ func TestTunnelLost(t *testing.T) {
 	t.Run("끊어진 포워드의 터널을 제거하고 핸들러에 알린다", func(t *testing.T) {
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
-		if err := manager.RegisterDNSTunnel(context.Background(), "ctx", "web", "default"); err != nil {
+		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
 			t.Fatalf("registration failed: %v", err)
 		}
 		var gotTunnel DNSTunnel

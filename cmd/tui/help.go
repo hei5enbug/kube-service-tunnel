@@ -28,6 +28,8 @@ var helpSections = []struct {
 	{"Namespace", []hint{{"Enter", "activate the namespace"}}},
 	{"Services", []hint{{"Enter", "register the service"}}},
 	{"Tunnels", []hint{
+		{"e", "edit the hostname and local port"},
+		{"", "settings last until you quit; Enter and Ctrl+P reuse them"},
 		{"d, Delete, Backspace", "remove the tunnel"},
 		{"c", "copy the URL"},
 	}},
@@ -38,7 +40,8 @@ var helpSections = []struct {
 	}},
 	{"Markers", []hint{
 		{"▶", "active context or namespace"},
-		{"●", "registered; the note names another owner context"},
+		{"●", "registered; the note shows a custom hostname"},
+		{"○", "another tunnel uses the hostname; the note names its context"},
 		{"✗", "not registrable; the note gives the reason"},
 		{"!", "discovery failed; i shows the error"},
 	}},

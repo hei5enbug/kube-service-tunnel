@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
 	"github.com/byoungmin/kube-service-tunnel/internal/kube"
 )
@@ -12,6 +13,7 @@ const (
 	noNamespaceText    = "Select a\nnamespace."
 	noServicesText     = "No services."
 	registeredSymbol   = "●"
+	nameTakenSymbol    = "○"
 	unregistrableSym   = "✗"
 	serviceSeparators  = 3
 	serviceMarkerWidth = 1
@@ -20,15 +22,41 @@ const (
 	minNoteWidth       = 9
 )
 
+// serviceRow is one service with what registering it would meet. Registered wins over NameUser, and both
+// win over Reason, in the order the Services pane checks them.
 type serviceRow struct {
-	Context string
-	Service kube.Service
-	Port    string
-	Reason  string
-	Owner   string
+	Context    string
+	Service    kube.Service
+	Port       string
+	Reason     string
+	Target     kube.ServiceRef
+	Tunnel     dns.DNSTunnel
+	Registered bool
+	// NameUser is the context of another tunnel that uses the hostname of Target.
+	NameUser string
 }
 
-func (row serviceRow) DNSName() string {
+func newServiceRow(contextName string, svc kube.Service, settings map[string]store.TunnelSetting, index tunnelIndex) serviceRow {
+	port, reason := kube.Eligibility(&svc)
+	key := store.SettingKey(contextName, svc.Namespace, svc.Name)
+	row := serviceRow{Context: contextName, Service: svc, Port: "-", Reason: reason, Target: serviceTarget(svc, settings[key])}
+	if port != nil {
+		row.Port = strconv.Itoa(int(port.Port))
+	}
+	if tunnel, ok := index.byService[key]; ok {
+		row.Tunnel, row.Registered = tunnel, true
+	} else if holder, ok := index.byHost[row.Hostname()]; ok {
+		row.NameUser = holder.Context
+	}
+	return row
+}
+
+// Hostname is the remembered hostname of the service, or its default hostname.
+func (row serviceRow) Hostname() string {
+	return row.Target.EffectiveHostname()
+}
+
+func (row serviceRow) DefaultHostname() string {
 	return kube.BuildServiceDNS(row.Service.Name, row.Service.Namespace)
 }
 
@@ -36,29 +64,28 @@ func (row serviceRow) Key() string {
 	return row.Service.Namespace + "/" + row.Service.Name
 }
 
-func buildServiceRows(state store.State, owners map[string]string) []serviceRow {
+func (row serviceRow) Label() string {
+	return serviceLabel(row.Context, row.Service.Namespace, row.Service.Name)
+}
+
+func buildServiceRows(state store.State, index tunnelIndex) []serviceRow {
 	rows := make([]serviceRow, 0, len(state.Services))
-	for i := range state.Services {
-		svc := state.Services[i]
-		port, reason := kube.Eligibility(&svc)
-		row := serviceRow{Context: state.SelectedContext, Service: svc, Port: "-", Reason: reason}
-		if port != nil {
-			row.Port = strconv.Itoa(int(port.Port))
-		}
-		row.Owner = owners[row.DNSName()]
-		rows = append(rows, row)
+	for _, svc := range state.Services {
+		rows = append(rows, newServiceRow(state.SelectedContext, svc, state.TunnelSettings, index))
 	}
 	return rows
 }
 
-// serviceMarker returns the marker, note and dimming of a row. A registered name wins over eligibility because
+// serviceMarker returns the marker, note and dimming of a row. Registration wins over eligibility because
 // the URL is live.
 func serviceMarker(row serviceRow) (string, string, bool) {
 	switch {
-	case row.Owner != "" && row.Owner != row.Context:
-		return registeredSymbol, "in " + row.Owner, false
-	case row.Owner != "":
+	case row.Registered && row.Tunnel.DNSURL != row.DefaultHostname():
+		return registeredSymbol, "→ " + row.Tunnel.DNSURL, false
+	case row.Registered:
 		return registeredSymbol, "", false
+	case row.NameUser != "":
+		return nameTakenSymbol, "in " + row.NameUser, false
 	case row.Reason != "":
 		return unregistrableSym, row.Reason, true
 	default:
@@ -69,7 +96,7 @@ func serviceMarker(row serviceRow) (string, string, bool) {
 func (a *App) renderServices() {
 	p := a.pane(store.FocusServices)
 	state := a.store.GetState()
-	all := buildServiceRows(state, tunnelOwners(a.tunnels))
+	all := buildServiceRows(state, indexTunnels(a.tunnels))
 	rows := filterRows(all, func(row serviceRow) bool { return matchFilter(p.filter, row.Service.Name) })
 	a.serviceRows = rows
 
@@ -147,28 +174,42 @@ func (a *App) registerService() {
 		a.store.Notify(store.LevelInfo, "No service under the cursor")
 		return
 	}
-	dnsName := row.DNSName()
-	switch {
-	case row.Owner != "":
-		a.store.Notify(store.LevelWarning, fmt.Sprintf("http://%s is already registered (context %s)", dnsName, row.Owner))
-		return
-	case row.Reason != "":
-		a.store.Notify(store.LevelWarning, fmt.Sprintf("%s cannot be registered: %s", row.Key(), row.Reason))
+	if refusal := registerRefusal(row); refusal != "" {
+		a.store.Notify(store.LevelWarning, refusal)
 		return
 	}
-	if !a.store.TryBeginLoading(fmt.Sprintf("Registering %s in %s", dnsName, row.Context)) {
+	if !a.store.TryBeginLoading(fmt.Sprintf("Registering %s in %s", row.Hostname(), row.Context)) {
 		return
 	}
-	go a.runRegister(row.Context, row.Service.Name, row.Service.Namespace, dnsName)
+	go a.runRegister(row.Context, row.Target)
 }
 
-func (a *App) runRegister(contextName, serviceName, namespace, dnsName string) {
+// registerRefusal explains why Enter does not register the row, or returns "" when it may.
+func registerRefusal(row serviceRow) string {
+	switch {
+	case row.Registered:
+		return fmt.Sprintf("%s is already registered as %s", row.Label(), tunnelURL(row.Tunnel))
+	case row.NameUser != "":
+		return fmt.Sprintf("http://%s is used by context %s. Rename that tunnel with e in Tunnels first.", row.Hostname(), row.NameUser)
+	case row.Reason != "":
+		return fmt.Sprintf("%s cannot be registered: %s", row.Key(), row.Reason)
+	default:
+		return ""
+	}
+}
+
+func (a *App) runRegister(contextName string, target kube.ServiceRef) {
 	defer a.store.SetLoading(false)
-	err := a.manager.RegisterDNSTunnel(a.ctx, contextName, serviceName, namespace)
+	tunnel, err := a.manager.RegisterDNSTunnel(a.ctx, contextName, target)
 	a.store.TunnelsChanged()
 	if err != nil {
-		a.store.Notify(store.LevelError, fmt.Sprintf("Registering %s failed: %v", dnsName, err))
+		a.store.Notify(store.LevelError, fmt.Sprintf("Registering %s failed: %v", target.EffectiveHostname(), err))
 		return
 	}
-	a.store.Notify(store.LevelSuccess, "Port forwarding started: http://"+dnsName)
+	text := "Port forwarding started: " + tunnelURL(tunnel)
+	if fallback, busy := portFallback(tunnel); busy {
+		a.store.Notify(store.LevelWarning, text+" · "+fallback)
+		return
+	}
+	a.store.Notify(store.LevelSuccess, text)
 }

@@ -7,7 +7,8 @@ Interactive TUI for Kubernetes service port forwarding and DNS management.
 - Interactive terminal UI for managing Kubernetes services
 - Automatic port forwarding for services
 - DNS management via `/etc/hosts`
-- Every service is reached at `http://<service>.<namespace>` on port 80
+- Every tunnel is reached at `http://<hostname>` on port 80, where the default hostname is `<service>.<namespace>`
+- Custom hostnames and local ports for each tunnel
 - Support for multiple Kubernetes contexts
 - System namespace filtering (kube-system, kube-public, kube-node-lease)
 
@@ -65,21 +66,29 @@ Resizing keeps the focused pane, the filters and the cursor position.
 |---|---|---|
 | `▶` | Context, Namespace | The active context or namespace. |
 | `!` | Context | Discovery failed for this context. |
-| `●` | Services | The service is registered. The NOTE column names the owner when another context owns it. |
+| `●` | Services | The service has a tunnel. The NOTE column shows `→ <hostname>` when the hostname is not the default. |
+| `○` | Services | Another tunnel uses the hostname this service would get. The NOTE column names that tunnel's context. |
 | `✗` | Services | The service cannot be registered. The NOTE column gives the reason. |
 
-A service shows `●` instead of `✗` when another context already registered its name.
+The Services pane checks these cases in the order of the table and shows the first one that applies.
+For example, a service shows `○` instead of `✗` when another tunnel already uses its hostname.
 The cursor highlight is separate from `▶`.
 Moving the cursor does not change the active context or namespace.
 Press Enter to make the row under the cursor active.
 
 ### Access URL
 
-After you register a service, open `http://<service>.<namespace>` in your browser.
+After you register a service, open `http://<hostname>` in your browser.
+The default hostname is `<service>.<namespace>`, and you can change it with `e` in the Tunnels pane.
 The URL always uses port 80, whatever port the service itself uses.
-Each service name and namespace pair can be registered only once.
-This holds even when the same pair exists in another context.
-The status line tells you which context already owns the name.
+A proxy on port 80 sends each hostname to the local port of its tunnel.
+The local port is a port forward on `127.0.0.1`, so `127.0.0.1:<local port>` also reaches the service directly.
+
+Each service of a context can have one tunnel.
+Each hostname can belong to only one tunnel, even across contexts.
+Enter on a service with `●` is refused, and the status line shows the URL of its tunnel.
+Enter on a service with `○` is refused, and the status line names the context that uses the hostname.
+To free that hostname, rename the other tunnel with `e` in the Tunnels pane first.
 
 ### Eligible Services
 
@@ -96,12 +105,45 @@ Ctrl+P in the Context pane registers every service of the context under the curs
 It covers the whole context, even when a filter hides some rows.
 A dialog first shows how many services and namespaces it covers.
 The dialog also shows how many services it skips because they cannot be registered or are already registered.
+A service counts as already registered when it shows `●` or `○`.
+Each service uses the hostname and local port remembered for it.
 The Cancel button has the focus when the dialog opens.
 Press `y` to register, or press `n` or Esc to cancel.
 The dialog uses the list from the last refresh, and the tool checks each service again while it registers.
 The loading dialog shows which service is being registered.
 The status line then sums up the result.
 The history lists every service that was excluded before the run, skipped, could not be registered or failed.
+It also lists every service whose remembered local port was busy, together with the port used instead.
+A run with a busy port ends with a warning.
+
+### Editing a Tunnel
+
+Press `e` in the Tunnels pane to change the hostname and the local port of the tunnel under the cursor.
+The dialog shows the service and two fields, **Hostname** and **Local port**.
+The Hostname field is filled in only when the tunnel uses a custom hostname.
+The Local port field is filled in only when you chose a port for the tunnel.
+An empty field uses the default: the hostname `<service>.<namespace>` or an automatic local port.
+Clearing a field and saving resets that setting to the default.
+
+A hostname may contain letters, digits, hyphens and dots, and the tool stores it in lower case.
+Each part between dots must start and end with a letter or a digit.
+An IP address is not a valid hostname.
+A hostname also cannot end with a number, such as `127.1` or `app.123`, because browsers read it as an IP address.
+A local port must be a number from 1 to 65535.
+Port 80 is not allowed because the proxy uses it.
+An invalid field shows an error line in the dialog, and the dialog stays open until you fix it or cancel.
+
+The local port must also be free on `127.0.0.1`.
+If it is busy, the update fails and the status line shows the error.
+The old tunnel keeps working until the new setting is in place, so a failed update leaves the tunnel as it was.
+When the update succeeds, the tool adds the new hostname to `/etc/hosts` and removes the old one.
+If only removing the old hostname or the old port forward fails, the update still applies with a warning.
+The cursor stays on the edited tunnel, even when its new hostname moves it in the list.
+
+The tool remembers the hostname and local port of each service while it runs.
+Enter in the Services pane and Ctrl+P reuse them, also after a tunnel was lost or removed.
+The settings are never saved to disk, so every start begins with the defaults.
+When a remembered port is busy at registration, the tool uses an automatic port and shows a warning.
 
 ### Filter and Details
 
@@ -116,7 +158,9 @@ Choosing another namespace clears the Services filter.
 Press `i` to open details for the row under the cursor.
 Context details include the full discovery error.
 Service details include every port, the selector and the reason a service cannot be registered.
-Tunnel details include the pod and the local address of the port forward.
+Tunnel details include the service, the hostname, the local port, the pod and the pod port.
+The hostname is marked `(default)` or `(custom)`.
+The local port is marked `(auto)` or `(set)`, or names the chosen port when that port was busy.
 
 ### Status Line and History
 
@@ -142,6 +186,7 @@ A port forward can drop, for example when a pod restarts.
 The tool then removes that tunnel from `/etc/hosts`, the proxy and the tunnel list.
 The status line shows a warning with the lost URL and its context.
 Press Enter on the service to register it again.
+The tool reuses the hostname and local port you set for that service.
 
 ### Copying a URL
 
@@ -183,6 +228,7 @@ Ctrl+C works even while the tool is loading.
 | Context | Ctrl+P | Register all services of the context under the cursor |
 | Namespace | Enter | Make the namespace active and move to the Services pane |
 | Services | Enter | Register the service under the cursor |
+| Tunnels | `e` | Edit the hostname and local port of the tunnel under the cursor |
 | Tunnels | `d`, Delete or Backspace | Remove the tunnel under the cursor |
 | Tunnels | `c` | Copy the URL of the tunnel under the cursor |
 | Filter input | Enter | Keep the filter and return to the pane |
@@ -192,10 +238,12 @@ Ctrl+C works even while the tool is loading.
 | Register dialog | `y` / `n` | Register or cancel |
 | Register dialog | Left / Right / Tab, Enter | Choose a button and press it |
 | Register dialog | Up / Down, PgUp / PgDn | Scroll the dialog text |
+| Edit dialog | Tab / Shift+Tab | Move between the fields and the buttons |
+| Edit dialog | Enter | Move from Hostname to Local port, save from Local port or Save, or cancel on Cancel |
 | Dialog | Esc | Close or cancel the dialog |
 
 Letter and number keys work only when a pane has the focus and no dialog is open.
-While you type a filter, they become part of the filter text.
+While you type a filter or fill in the edit dialog, they become part of the text.
 
 ## Requirements
 

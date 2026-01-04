@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
 	"github.com/byoungmin/kube-service-tunnel/internal/kube"
 )
@@ -99,6 +100,10 @@ func TestMatchFilter(t *testing.T) {
 	})
 }
 
+func registeredRow(tunnel dns.DNSTunnel) serviceRow {
+	return serviceRow{Context: tunnel.Context, Service: httpService(tunnel.Namespace, tunnel.Service, 8080), Tunnel: tunnel, Registered: true}
+}
+
 func TestServiceMarker(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -108,10 +113,11 @@ func TestServiceMarker(t *testing.T) {
 		wantDim    bool
 	}{
 		{"등록 가능한 서비스는 표시가 없다", serviceRow{Context: "dev"}, " ", "", false},
-		{"같은 컨텍스트가 등록하면 ●만 붙는다", serviceRow{Context: "dev", Owner: "dev"}, "●", "", false},
-		{"다른 컨텍스트가 등록하면 소유 컨텍스트를 적는다", serviceRow{Context: "dev", Owner: "prod"}, "●", "in prod", false},
+		{"기본 이름으로 등록된 서비스는 ●만 붙는다", registeredRow(tunnel("dev", "api", "web")), "●", "", false},
+		{"바꾼 이름으로 등록된 서비스는 ●와 그 이름을 적는다", registeredRow(tunnelAt("dev", "api", "web", "api.local")), "●", "→ api.local", false},
+		{"다른 터널이 이름을 쓰면 ○와 그 터널의 컨텍스트를 적는다", serviceRow{Context: "dev", NameUser: "prod"}, "○", "in prod", false},
 		{"등록할 수 없으면 ✗와 이유를 적고 흐리게 한다", serviceRow{Context: "dev", Reason: kube.ReasonNoSelector}, "✗", "no selector", true},
-		{"등록할 수 없어도 이미 등록된 이름이면 ●가 우선한다", serviceRow{Context: "dev", Owner: "prod", Reason: kube.ReasonNoHTTPPort}, "●", "in prod", false},
+		{"등록할 수 없어도 다른 터널이 이름을 쓰면 ○가 우선한다", serviceRow{Context: "dev", NameUser: "prod", Reason: kube.ReasonNoHTTPPort}, "○", "in prod", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,11 +139,39 @@ func TestServiceMarker(t *testing.T) {
 		state := store.State{SelectedContext: "dev", Services: []kube.Service{httpService("api", "web", 8080), grpcService("api", "grpc")}}
 
 		// when
-		rows := buildServiceRows(state, map[string]string{"web.api": "prod"})
+		rows := buildServiceRows(state, indexTunnels([]dns.DNSTunnel{tunnel("prod", "api", "web")}))
 
 		// then
-		if rows[0].Port != "8080" || rows[0].Owner != "prod" || rows[1].Port != "-" || rows[1].Reason != kube.ReasonNoHTTPPort {
+		if rows[0].Port != "8080" || rows[0].NameUser != "prod" || rows[1].Port != "-" || rows[1].Reason != kube.ReasonNoHTTPPort {
 			t.Fatalf("rows = %+v", rows)
+		}
+	})
+
+	t.Run("행은 기억한 설정을 대상에 담고 그 이름을 쓰는 다른 터널을 찾는다", func(t *testing.T) {
+		// given
+		settings := map[string]store.TunnelSetting{store.SettingKey("dev", "api", "web"): {Hostname: "shop.local", LocalPort: 8081}}
+		state := store.State{SelectedContext: "dev", Services: []kube.Service{httpService("api", "web", 8080)}, TunnelSettings: settings}
+
+		// when
+		rows := buildServiceRows(state, indexTunnels([]dns.DNSTunnel{tunnelAt("prod", "shop", "cart", "shop.local")}))
+
+		// then
+		want := kube.ServiceRef{Namespace: "api", Name: "web", Hostname: "shop.local", LocalPort: 8081}
+		if rows[0].Target != want || rows[0].NameUser != "prod" || rows[0].Registered {
+			t.Fatalf("row = %+v", rows[0])
+		}
+	})
+
+	t.Run("이름이 바뀐 자기 터널은 이름이 아니라 서비스로 찾는다", func(t *testing.T) {
+		// given
+		state := store.State{SelectedContext: "dev", Services: []kube.Service{httpService("api", "web", 8080)}}
+
+		// when
+		rows := buildServiceRows(state, indexTunnels([]dns.DNSTunnel{tunnelAt("dev", "api", "web", "api.local")}))
+
+		// then
+		if !rows[0].Registered || rows[0].Tunnel.DNSURL != "api.local" || rows[0].NameUser != "" {
+			t.Fatalf("row = %+v", rows[0])
 		}
 	})
 }

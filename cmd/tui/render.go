@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
+import (
+	"maps"
+
+	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
+)
 
 type stateChange struct {
 	resources bool
@@ -13,7 +17,7 @@ func diffState(prev, next store.State) stateChange {
 	selection := prev.SelectedContext != next.SelectedContext || prev.SelectedNamespace != next.SelectedNamespace
 	return stateChange{
 		resources: selection || prev.ResourcesRevision != next.ResourcesRevision,
-		tunnels:   prev.TunnelsRevision != next.TunnelsRevision,
+		tunnels:   prev.TunnelsRevision != next.TunnelsRevision || !maps.Equal(prev.TunnelSettings, next.TunnelSettings),
 		chrome:    selection || prev.Status.ID != next.Status.ID || prev.Unread != next.Unread || prev.Focus != next.Focus,
 		loading:   prev.IsLoading != next.IsLoading || prev.LoadingLabel != next.LoadingLabel,
 	}

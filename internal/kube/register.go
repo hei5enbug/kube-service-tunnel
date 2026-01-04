@@ -12,7 +12,8 @@ func withAPITimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, apiCallTimeout)
 }
 
-func (m *kubeAdapter) RegisterServicePortForward(ctx context.Context, contextName, serviceName, namespace string, usedPorts map[int32]bool) (ServiceTunnel, error) {
+func (m *kubeAdapter) RegisterServicePortForward(ctx context.Context, contextName string, target ServiceRef, usedPorts map[int32]bool) (ServiceTunnel, error) {
+	serviceName, namespace := target.Name, target.Namespace
 	listCtx, cancel := withAPITimeout(ctx)
 	services, err := m.ListServices(listCtx, namespace, contextName)
 	cancel()
@@ -30,7 +31,7 @@ func (m *kubeAdapter) RegisterServicePortForward(ctx context.Context, contextNam
 		return ServiceTunnel{}, err
 	}
 
-	tunnel, err := m.registerService(ctx, contextName, svc, usedPorts, config, clientset)
+	tunnel, err := m.registerService(ctx, contextName, svc, target, usedPorts, config, clientset)
 	if err != nil {
 		return ServiceTunnel{}, fmt.Errorf("service %s/%s: %w", namespace, serviceName, err)
 	}
@@ -83,7 +84,7 @@ func (m *kubeAdapter) RegisterServicesForContext(
 			return result, err
 		}
 		if progress != nil {
-			progress(RegistrationProgress{Done: i, Total: len(targets), Current: BuildServiceDNS(target.Name, target.Namespace)})
+			progress(RegistrationProgress{Done: i, Total: len(targets), Current: target.EffectiveHostname()})
 		}
 		run.process(ctx, target, &result)
 	}
@@ -150,13 +151,13 @@ func (r *bulkRun) process(ctx context.Context, target ServiceRef, result *Regist
 		return
 	}
 
-	dns := BuildServiceDNS(svc.Name, svc.Namespace)
+	dns := target.EffectiveHostname()
 	if owner := r.owners[dns]; owner != "" {
 		result.Skipped = append(result.Skipped, fail(fmt.Sprintf("already registered (context %s)", owner)))
 		return
 	}
 
-	tunnel, err := r.adapter.registerService(ctx, r.contextName, svc, r.usedPorts, r.config, r.clientset)
+	tunnel, err := r.adapter.registerService(ctx, r.contextName, svc, target, r.usedPorts, r.config, r.clientset)
 	if err != nil {
 		result.Failures = append(result.Failures, fail(err.Error()))
 		return
@@ -169,6 +170,7 @@ func (m *kubeAdapter) registerService(
 	ctx context.Context,
 	contextName string,
 	svc Service,
+	target ServiceRef,
 	usedPorts map[int32]bool,
 	config *rest.Config,
 	clientset kubernetes.Interface,
@@ -185,7 +187,7 @@ func (m *kubeAdapter) registerService(
 		return ServiceTunnel{}, err
 	}
 
-	localPort, err := findAvailablePort(minLocalPort, usedPorts)
+	localPort, err := chooseLocalPort(target.LocalPort, usedPorts)
 	if err != nil {
 		return ServiceTunnel{}, fmt.Errorf("find available port: %w", err)
 	}
@@ -199,12 +201,22 @@ func (m *kubeAdapter) registerService(
 	}
 
 	return ServiceTunnel{
-		Context:    contextName,
-		Namespace:  svc.Namespace,
-		DNSURL:     BuildServiceDNS(svc.Name, svc.Namespace),
-		Pod:        pod.Name,
-		LocalPort:  localPort,
-		RemotePort: podPort,
-		ForwardKey: forwardKey,
+		Context:            contextName,
+		Namespace:          svc.Namespace,
+		Service:            svc.Name,
+		DNSURL:             target.EffectiveHostname(),
+		Pod:                pod.Name,
+		LocalPort:          localPort,
+		RequestedLocalPort: target.LocalPort,
+		RemotePort:         podPort,
+		ForwardKey:         forwardKey,
 	}, nil
+}
+
+// chooseLocalPort returns the preferred port when it is usable, otherwise the next automatic port.
+func chooseLocalPort(preferred int32, usedPorts map[int32]bool) (int32, error) {
+	if preferred != 0 && !usedPorts[preferred] && isLocalPortFree(preferred) {
+		return preferred, nil
+	}
+	return findAvailablePort(minLocalPort, usedPorts)
 }

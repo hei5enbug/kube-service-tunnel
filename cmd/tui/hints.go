@@ -16,6 +16,7 @@ const (
 	scopeFilter
 	scopeText
 	scopeConfirm
+	scopeEdit
 	scopeLoading
 )
 
@@ -34,10 +35,11 @@ var (
 		scopeContexts:   {{"↵", "activate"}, {"^P", "register all"}},
 		scopeNamespaces: {{"↵", "activate"}},
 		scopeServices:   {{"↵", "register"}},
-		scopeTunnels:    {{"d", "delete"}, {"c", "copy"}},
+		scopeTunnels:    {{"e", "edit"}, {"d", "delete"}, {"c", "copy"}},
 		scopeFilter:     {{"type", "to filter"}, {"↵", "keep"}, {"esc", "clear"}, {"⇥", "next pane"}, {"F1", "help"}},
 		scopeText:       {{"↑↓", "scroll"}, {"esc", "close"}},
 		scopeConfirm:    {{"y", "register"}, {"n", "cancel"}, {"←→", "choose"}, {"↵", "select"}, {"↑↓", "scroll"}, {"esc", "cancel"}},
+		scopeEdit:       {{"⇥", "next"}, {"↵", "save"}, {"esc", "cancel"}},
 	}
 )
 
@@ -69,7 +71,7 @@ func hintsFor(scope hintScope, width int) []hint {
 		return quitHints
 	}
 	head := scopeHints[scope]
-	if scope == scopeFilter || scope == scopeText || scope == scopeConfirm {
+	if scope == scopeFilter || scope == scopeText || scope == scopeConfirm || scope == scopeEdit {
 		return fitHints(nil, head, quitHints, width)
 	}
 	return fitHints(head, commonTableHints, tableTailHints, width)
