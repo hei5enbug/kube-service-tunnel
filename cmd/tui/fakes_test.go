@@ -32,24 +32,29 @@ type bulkCall struct {
 // instead of any requested local port. updateErr fails an update, except that an error wrapping
 // dns.ErrUpdateCleanup still applies it.
 type fakeManager struct {
-	mu           sync.Mutex
-	tunnels      []dns.DNSTunnel
-	registers    []registerCall
-	updates      []updateCall
-	bulks        []bulkCall
-	unregisters  []string
-	lost         func(dns.DNSTunnel, error)
-	registerErr  error
-	busyFallback int32
-	updateErr    error
-	bulkGate     chan struct{}
-	bulkResult   dns.BulkRegistrationResult
-	bulkErr      error
+	mu            sync.Mutex
+	tunnels       []dns.DNSTunnel
+	registers     []registerCall
+	updates       []updateCall
+	bulks         []bulkCall
+	unregisters   []string
+	lost          func(dns.DNSTunnel, error)
+	registerErr   error
+	busyFallback  int32
+	updateErr     error
+	bulkGate      chan struct{}
+	bulkResult    dns.BulkRegistrationResult
+	bulkErr       error
+	unregisterErr error
+	cleanupErr    error
+	cleanups      int
+	listings      int
 }
 
 func (m *fakeManager) GetAllDNSTunnels() []dns.DNSTunnel {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.listings++
 	return slices.Clone(m.tunnels)
 }
 
@@ -112,6 +117,9 @@ func (m *fakeManager) UnregisterDNSTunnel(dnsURL string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.unregisters = append(m.unregisters, dnsURL)
+	if m.unregisterErr != nil {
+		return m.unregisterErr
+	}
 	m.tunnels = slices.DeleteFunc(slices.Clone(m.tunnels), func(t dns.DNSTunnel) bool { return t.DNSURL == dnsURL })
 	return nil
 }
@@ -122,7 +130,24 @@ func (m *fakeManager) SetTunnelLostHandler(handler func(dns.DNSTunnel, error)) {
 	m.lost = handler
 }
 
-func (m *fakeManager) Cleanup() error { return nil }
+func (m *fakeManager) Cleanup() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanups++
+	return m.cleanupErr
+}
+
+func (m *fakeManager) listCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.listings
+}
+
+func (m *fakeManager) cleanupCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cleanups
+}
 
 func (m *fakeManager) loseTunnel(dnsURL string) {
 	m.mu.Lock()
@@ -191,6 +216,7 @@ type fakeKube struct {
 	listErr      error
 	refreshed    map[string]kube.ContextResources
 	refreshCalls []string
+	fetchAllRuns int
 }
 
 func (k *fakeKube) CurrentContext(context.Context) (string, error) {
@@ -198,6 +224,9 @@ func (k *fakeKube) CurrentContext(context.Context) (string, error) {
 }
 
 func (k *fakeKube) FetchAllResources(context.Context) (map[string]kube.ContextResources, error) {
+	k.mu.Lock()
+	k.fetchAllRuns++
+	k.mu.Unlock()
 	return k.resources, k.listErr
 }
 
@@ -294,4 +323,16 @@ func sampleCluster() map[string]kube.ContextResources {
 			Err:        fmt.Errorf("context prod namespace audit: %w", errors.New("forbidden")),
 		},
 	}
+}
+
+func (k *fakeKube) fetchAllCalls() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.fetchAllRuns
+}
+
+func (k *fakeKube) refreshRuns() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return len(k.refreshCalls)
 }

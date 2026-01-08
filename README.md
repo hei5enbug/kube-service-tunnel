@@ -182,7 +182,9 @@ Refreshing keeps the tunnels, the filters, the selected namespace and the cursor
 
 ### Lost Tunnels
 
-A port forward can drop, for example when a pod restarts.
+A tunnel is lost when its pod is deleted, starts terminating, is replaced by a new pod with the same name, or stops.
+A tunnel is also lost when the port forward itself ends, for example when the connection to the cluster breaks.
+The tool watches the forwarded pod, so it notices a lost tunnel within seconds.
 The tool then removes that tunnel from `/etc/hosts`, the proxy and the tunnel list.
 The status line shows a warning with the lost URL and its context.
 Press Enter on the service to register it again.
@@ -251,3 +253,19 @@ While you type a filter or fill in the edit dialog, they become part of the text
 - Sudo privileges (for `/etc/hosts` modification)
 
 **Note:** Go is only required when building from source. Homebrew installation does not require Go.
+
+## Development
+
+Run the unit tests with `go test -race ./...`.
+They need no cluster and no root.
+
+The end-to-end test runs the real port forward and proxy against a disposable [kind](https://kind.sigs.k8s.io/) cluster.
+It refuses to run on a context whose name does not start with `kind-`.
+It creates the namespace `kst-e2e`, deletes it at the end, and uses a temporary proxy port instead of port 80.
+
+```bash
+kind create cluster --name kst-e2e --kubeconfig /tmp/kst-e2e.kubeconfig
+KST_E2E_KUBECONFIG=/tmp/kst-e2e.kubeconfig KST_E2E_CONTEXT=kind-kst-e2e \
+  go test -tags e2e -race -count=1 -run TestE2EAgainstKind ./cmd/dns
+kind delete cluster --name kst-e2e
+```

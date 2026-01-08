@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -104,6 +106,86 @@ func TestAcquire(t *testing.T) {
 		if err == nil {
 			_ = lock.Release()
 			t.Fatal("expected error for missing directory")
+		}
+	})
+}
+
+func TestAcquireLockFailure(t *testing.T) {
+	t.Run("락 시스템 호출이 EWOULDBLOCK이 아닌 오류로 실패하면 ErrAlreadyRunning 없이 감싼 오류를 반환한다", func(t *testing.T) {
+		// given
+		cause := syscall.EIO
+		original := flock
+		flock = func(int, int) error { return cause }
+		t.Cleanup(func() { flock = original })
+		path := filepath.Join(t.TempDir(), "app.lock")
+
+		// when
+		lock, err := Acquire(path)
+
+		// then
+		if lock != nil {
+			t.Fatal("expected nil lock on failure")
+		}
+		if errors.Is(err, ErrAlreadyRunning) {
+			t.Fatalf("unexpected ErrAlreadyRunning: %v", err)
+		}
+		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "lock "+path) {
+			t.Fatalf("err = %v, want wrapped %v", err, cause)
+		}
+	})
+
+	t.Run("락 파일 경로가 디렉터리면 열기 오류를 경로와 함께 반환한다", func(t *testing.T) {
+		// given
+		path := t.TempDir()
+
+		// when
+		lock, err := Acquire(path)
+
+		// then
+		if lock != nil {
+			t.Fatal("expected nil lock on failure")
+		}
+		if err == nil || !strings.Contains(err.Error(), "open lock file "+path) {
+			t.Fatalf("err = %v, want open lock file error", err)
+		}
+	})
+}
+
+func TestRelease(t *testing.T) {
+	t.Run("이미 닫힌 파일이면 감싼 오류를 반환하고 다시 호출해도 같은 오류를 반환한다", func(t *testing.T) {
+		// given
+		path := filepath.Join(t.TempDir(), "app.lock")
+		lock, err := Acquire(path)
+		if err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		if err := lock.file.Close(); err != nil {
+			t.Fatalf("close file: %v", err)
+		}
+
+		// when
+		first := lock.Release()
+		second := lock.Release()
+
+		// then
+		if first == nil || !strings.Contains(first.Error(), "release lock") {
+			t.Fatalf("first = %v, want release lock error", first)
+		}
+		if second != first {
+			t.Fatalf("second = %v, want the first result %v", second, first)
+		}
+	})
+
+	t.Run("파일이 없는 락은 패닉 없이 오류를 반환한다", func(t *testing.T) {
+		// given
+		lock := &Lock{}
+
+		// when
+		err := lock.Release()
+
+		// then
+		if err == nil {
+			t.Fatal("expected error for lock without file")
 		}
 	})
 }

@@ -3,9 +3,12 @@ package kube
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -161,5 +164,23 @@ func (m *kubeAdapter) StartForward(ctx context.Context, contextName, namespace, 
 	if err != nil {
 		return "", err
 	}
+	if clientset != nil {
+		uid, err := readPodUID(ctx, clientset, namespace, pod)
+		if err != nil {
+			return "", err
+		}
+		ctx = withExpectedPodUID(ctx, uid)
+	}
 	return m.portForwardClient.StartPortForward(ctx, contextName, namespace, pod, localPort, remotePort, config, clientset)
+}
+
+// readPodUID reads the pod once so the forward can be tied to exactly this pod instance.
+func readPodUID(ctx context.Context, clientset kubernetes.Interface, namespace, pod string) (types.UID, error) {
+	readCtx, cancel := withAPITimeout(ctx)
+	defer cancel()
+	current, err := clientset.CoreV1().Pods(namespace).Get(readCtx, pod, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("read pod %s/%s: %w", namespace, pod, err)
+	}
+	return current.UID, nil
 }

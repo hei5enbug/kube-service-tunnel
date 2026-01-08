@@ -82,12 +82,42 @@ func (r *screenRef) get() tcell.Screen {
 	return r.screen
 }
 
-func Run(kubeconfigPath string) (runErr error) {
-	kubeAdapter, err := kube.NewKubeAdapter(kubeconfigPath)
+// runDeps are the collaborators of run that tests replace. A nil screen makes tview open the terminal.
+type runDeps struct {
+	newKubeAdapter func(kubeconfigPath string) (kube.KubeAdapterInterface, error)
+	newManager     func(kubeconfigPath string) (dns.DNSManagerInterface, error)
+	copier         clipboard.Copier
+	watchSignals   func() (signals <-chan os.Signal, stop func())
+	screen         tcell.Screen
+}
+
+func Run(kubeconfigPath string) error {
+	return run(kubeconfigPath, runDeps{
+		newKubeAdapter: kube.NewKubeAdapter,
+		newManager: func(path string) (dns.DNSManagerInterface, error) {
+			manager, err := dns.NewDNSManager(path)
+			if err != nil {
+				return nil, err
+			}
+			return manager, nil
+		},
+		copier:       clipboard.NewSystem(),
+		watchSignals: notifyShutdownSignals,
+	})
+}
+
+func notifyShutdownSignals() (<-chan os.Signal, func()) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	return sigChan, func() { signal.Stop(sigChan) }
+}
+
+func run(kubeconfigPath string, deps runDeps) (runErr error) {
+	kubeAdapter, err := deps.newKubeAdapter(kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("create kube adapter: %w", err)
 	}
-	manager, err := dns.NewDNSManager(kubeconfigPath)
+	manager, err := deps.newManager(kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("create service tunnel manager: %w", err)
 	}
@@ -97,13 +127,13 @@ func Run(kubeconfigPath string) (runErr error) {
 	app := newApp(ctx, cancel, dependencies{
 		manager:     manager,
 		kubeAdapter: kubeAdapter,
-		copier:      clipboard.NewSystem(),
+		copier:      deps.copier,
 		store:       store.NewStore(),
+		screen:      deps.screen,
 	})
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(sigChan)
+	sigChan, stopSignals := deps.watchSignals()
+	defer stopSignals()
 	defer func() {
 		cancel()
 		if cleanupErr := manager.Cleanup(); cleanupErr != nil {

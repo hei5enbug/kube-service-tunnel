@@ -5,7 +5,14 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 func customAdapter(forwards *fakePortForwardClient, services ...Service) *kubeAdapter {
@@ -94,6 +101,23 @@ func TestRegisterServicePortForwardLocalPort(t *testing.T) {
 					t.Fatalf("tunnel = %+v, want automatic fallback with requested %d kept", tunnel, tt.preferred)
 				}
 			})
+		}
+	})
+
+	t.Run("선택한 파드의 UID를 포워딩에 묶는다", func(t *testing.T) {
+		// given
+		forwards := &fakePortForwardClient{}
+		pod := readyPod("web-1")
+		pod.UID = "uid-5"
+		adapter := customAdapter(forwards, httpService("web", "app", selectorApp))
+		adapter.podClient = &fakePodClient{pods: []Pod{pod}}
+
+		// when
+		_, err := adapter.RegisterServicePortForward(context.Background(), "ctx", ServiceRef{Namespace: "app", Name: "web"}, map[int32]bool{})
+
+		// then
+		if err != nil || len(forwards.started) != 1 || forwards.started[0].expectedUID != "uid-5" {
+			t.Fatalf("err = %v, started = %+v, want one forward tied to uid-5", err, forwards.started)
 		}
 	})
 
@@ -232,6 +256,39 @@ func TestNextFreeLocalPort(t *testing.T) {
 }
 
 func TestStartForward(t *testing.T) {
+	t.Run("포워딩을 열기 전에 파드를 한 번 읽어 그 UID를 포워딩에 묶는다", func(t *testing.T) {
+		// given
+		forwards := &fakePortForwardClient{}
+		adapter := customAdapter(forwards)
+		pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "web-1", Namespace: "app", UID: "uid-77"}}
+		clientset := fake.NewClientset(&pod)
+		adapter.newClient = func(string) (*rest.Config, kubernetes.Interface, error) { return &rest.Config{}, clientset, nil }
+
+		// when
+		_, err := adapter.StartForward(context.Background(), "ctx", "app", "web-1", 8080, 41234)
+
+		// then
+		if err != nil || len(forwards.started) != 1 || forwards.started[0].expectedUID != "uid-77" {
+			t.Fatalf("err = %v, started = %+v, want one forward tied to uid-77", err, forwards.started)
+		}
+	})
+
+	t.Run("파드를 읽지 못하면 포워딩을 열지 않고 오류를 돌려준다", func(t *testing.T) {
+		// given
+		forwards := &fakePortForwardClient{}
+		adapter := customAdapter(forwards)
+		clientset := fake.NewClientset()
+		adapter.newClient = func(string) (*rest.Config, kubernetes.Interface, error) { return &rest.Config{}, clientset, nil }
+
+		// when
+		key, err := adapter.StartForward(context.Background(), "ctx", "app", "web-1", 8080, 41234)
+
+		// then
+		if err == nil || key != "" || !strings.Contains(err.Error(), "read pod app/web-1") || len(forwards.started) != 0 {
+			t.Fatalf("key = %q, err = %v, started = %+v, want a read pod error and no forward", key, err, forwards.started)
+		}
+	})
+
 	t.Run("원격 포트와 로컬 포트를 올바른 순서로 포트 포워드 클라이언트에 전달한다", func(t *testing.T) {
 		// given
 		forwards := &fakePortForwardClient{}

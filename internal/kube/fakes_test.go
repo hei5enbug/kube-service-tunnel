@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -73,6 +74,8 @@ type fakeStartedForward struct {
 	pod        string
 	localPort  int32
 	remotePort int32
+	// expectedUID is the pod UID the caller tied the forward to.
+	expectedUID types.UID
 }
 
 type fakePortForwardClient struct {
@@ -81,7 +84,7 @@ type fakePortForwardClient struct {
 	startFn func(pod string) error
 }
 
-func (f *fakePortForwardClient) StartPortForward(_ context.Context, contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) (string, error) {
+func (f *fakePortForwardClient) StartPortForward(ctx context.Context, contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) (string, error) {
 	if f.startFn != nil {
 		if err := f.startFn(pod); err != nil {
 			return "", err
@@ -89,7 +92,7 @@ func (f *fakePortForwardClient) StartPortForward(_ context.Context, contextName,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.started = append(f.started, fakeStartedForward{namespace: namespace, pod: pod, localPort: localPort, remotePort: remotePort})
+	f.started = append(f.started, fakeStartedForward{namespace: namespace, pod: pod, localPort: localPort, remotePort: remotePort, expectedUID: expectedPodUID(ctx)})
 	return BuildPortForwardKey(contextName, namespace, pod, remotePort, localPort), nil
 }
 

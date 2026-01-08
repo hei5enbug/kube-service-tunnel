@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var (
@@ -22,6 +23,7 @@ type PodPort struct {
 
 type Pod struct {
 	Name        string
+	UID         types.UID
 	Namespace   string
 	Status      string
 	Ready       bool
@@ -111,6 +113,7 @@ func podFromCorev1(pod corev1.Pod) Pod {
 
 	return Pod{
 		Name:        pod.Name,
+		UID:         pod.UID,
 		Namespace:   pod.Namespace,
 		Status:      string(pod.Status.Phase),
 		Ready:       isPodReady(pod),

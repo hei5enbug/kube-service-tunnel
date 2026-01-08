@@ -479,3 +479,101 @@ func TestWriteHostsFile(t *testing.T) {
 		}
 	})
 }
+
+func TestNewHostsFileAdapter(t *testing.T) {
+	t.Run("기본 어댑터는 /etc/hosts 경로를 대상으로 한다", func(t *testing.T) {
+		// given / when
+		adapter := NewHostsFileAdapter()
+
+		// then
+		if adapter.hostsPath != "/etc/hosts" {
+			t.Fatalf("hostsPath = %q, want /etc/hosts", adapter.hostsPath)
+		}
+	})
+}
+
+func TestNormalizeHostname(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+		fails bool
+	}{
+		{"앞뒤 공백을 지우고 소문자로 바꾼다", "  Web.Local \n", "web.local", false},
+		{"빈 문자열이면 오류를 반환한다", "", "", true},
+		{"공백뿐이면 오류를 반환한다", " \t ", "", true},
+		{"중간에 공백이 있으면 오류를 반환한다", "a b", "", true},
+		{"탭이 있으면 오류를 반환한다", "a\tb", "", true},
+		{"주석 문자가 있으면 오류를 반환한다", "a#b", "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// given
+			input := tc.input
+
+			// when
+			got, err := normalizeHostname(input)
+
+			// then
+			if (err != nil) != tc.fails {
+				t.Fatalf("err = %v, fails = %v", err, tc.fails)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInvalidHostnameLeavesFileUntouched(t *testing.T) {
+	operations := map[string]func(*hostsFileAdapter) error{
+		"AddEntry":    func(a *hostsFileAdapter) error { return a.AddEntry("bad host") },
+		"RemoveEntry": func(a *hostsFileAdapter) error { return a.RemoveEntry("") },
+	}
+
+	for name, operation := range operations {
+		t.Run(name+"은 잘못된 호스트명이면 오류를 반환하고 파일을 바꾸지 않는다", func(t *testing.T) {
+			// given
+			adapter, path := newFixture(t, baseHosts)
+
+			// when
+			err := operation(adapter)
+
+			// then
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := readFile(t, path); got != baseHosts {
+				t.Fatalf("file changed:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestRenderLines(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"입력이 비어 있으면 빈 문자열을 반환한다", nil, ""},
+		{"빈 줄과 공백 줄뿐이면 빈 문자열을 반환한다", []string{"", "  ", ""}, ""},
+		{"끝의 빈 줄을 지우고 개행 하나로 끝낸다", []string{"a", "b", "", ""}, "a\nb\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// given
+			lines := tc.lines
+
+			// when
+			got := renderLines(lines)
+
+			// then
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

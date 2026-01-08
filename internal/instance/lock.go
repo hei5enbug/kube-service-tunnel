@@ -13,6 +13,8 @@ const (
 	lockFileMode    = 0o644
 )
 
+var flock = syscall.Flock
+
 var ErrAlreadyRunning = errors.New("another kube-service-tunnel instance is already running")
 
 type Lock struct {
@@ -28,7 +30,7 @@ func Acquire(path string) (*Lock, error) {
 		return nil, fmt.Errorf("open lock file %s: %w", path, err)
 	}
 
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		closeErr := file.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("%w (lock file %s)", ErrAlreadyRunning, path)

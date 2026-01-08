@@ -7,12 +7,29 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 )
 
-const portForwardReadyTimeout = 30 * time.Second
+const (
+	portForwardReadyTimeout = 30 * time.Second
+	portForwardStopTimeout  = 5 * time.Second
+)
+
+type expectedPodUIDKey struct{}
+
+// withExpectedPodUID carries the UID of the pod a forward is meant for, so the pod monitor never adopts
+// another pod with the same name as its baseline.
+func withExpectedPodUID(ctx context.Context, uid types.UID) context.Context {
+	return context.WithValue(ctx, expectedPodUIDKey{}, uid)
+}
+
+func expectedPodUID(ctx context.Context) types.UID {
+	uid, _ := ctx.Value(expectedPodUIDKey{}).(types.UID)
+	return uid
+}
 
 var ErrPortForwardNotFound = errors.New("port forward not found")
 
@@ -27,6 +44,8 @@ type portForwardClient struct {
 	forwards     map[string]*PortForward
 	lostHandler  func(key string, err error)
 	run          forwardRunner
+	detectLoss   podLossDetector
+	stopTimeout  time.Duration
 	readyTimeout time.Duration
 	mu           sync.Mutex
 }
@@ -39,14 +58,19 @@ type PortForward struct {
 	LocalPort  int32
 	RemotePort int32
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	errCh    chan error
-	doneCh   chan struct{}
+	stopCh        chan struct{}
+	stopOnce      sync.Once
+	monitorCtx    context.Context
+	cancelMonitor context.CancelFunc
+	errCh         chan error
+	doneCh        chan struct{}
 }
 
 func (f *PortForward) stop() {
-	f.stopOnce.Do(func() { close(f.stopCh) })
+	f.stopOnce.Do(func() {
+		close(f.stopCh)
+		f.cancelMonitor()
+	})
 }
 
 func NewPortForwardClient() PortForwardClientInterface {
@@ -57,6 +81,8 @@ func newPortForwardClient(run forwardRunner, readyTimeout time.Duration) *portFo
 	return &portForwardClient{
 		forwards:     make(map[string]*PortForward),
 		run:          run,
+		detectLoss:   watchPodLoss,
+		stopTimeout:  portForwardStopTimeout,
 		readyTimeout: readyTimeout,
 	}
 }
@@ -73,7 +99,9 @@ func (p *portForwardClient) SetLostHandler(handler func(key string, err error)) 
 
 func (p *portForwardClient) StartPortForward(ctx context.Context, contextName, namespace, pod string, localPort, remotePort int32, config *rest.Config, clientset kubernetes.Interface) (string, error) {
 	key := BuildPortForwardKey(contextName, namespace, pod, remotePort, localPort)
+	expectedUID := expectedPodUID(ctx)
 
+	monitorCtx, cancelMonitor := context.WithCancel(context.Background())
 	forward := &PortForward{
 		Key:        key,
 		Context:    contextName,
@@ -84,9 +112,13 @@ func (p *portForwardClient) StartPortForward(ctx context.Context, contextName, n
 		stopCh:     make(chan struct{}),
 		errCh:      make(chan error, 1),
 		doneCh:     make(chan struct{}),
+
+		monitorCtx:    monitorCtx,
+		cancelMonitor: cancelMonitor,
 	}
 
 	if err := p.add(forward); err != nil {
+		cancelMonitor()
 		return "", err
 	}
 
@@ -101,6 +133,9 @@ func (p *portForwardClient) StartPortForward(ctx context.Context, contextName, n
 	}
 
 	go p.watchForward(forward)
+	if clientset != nil {
+		go p.monitorPod(forward, clientset, expectedUID)
+	}
 	return key, nil
 }
 
@@ -140,21 +175,38 @@ func (p *portForwardClient) watchForward(forward *PortForward) {
 	default:
 	}
 
+	if exitErr == nil {
+		exitErr = portforward.ErrLostConnectionToPod
+	}
+	p.markLost(forward, exitErr)
+}
+
+// monitorPod reports the forward as lost when its pod goes away, until the forward stops for any reason.
+func (p *portForwardClient) monitorPod(forward *PortForward, clientset kubernetes.Interface, expected types.UID) {
+	if err := p.detectLoss(forward.monitorCtx, clientset, forward.Namespace, forward.Pod, expected); err != nil {
+		p.markLost(forward, err)
+	}
+}
+
+// markLost removes the forward when it is still the current one, stops it, waits for its local port to be
+// released, and then calls the lost handler. Only the caller that removes the forward reports the loss.
+func (p *portForwardClient) markLost(forward *PortForward, lostErr error) {
 	if !p.removeIfCurrent(forward) {
 		return
+	}
+	forward.stop()
+
+	select {
+	case <-forward.doneCh:
+	case <-time.After(p.stopTimeout):
 	}
 
 	p.mu.Lock()
 	handler := p.lostHandler
 	p.mu.Unlock()
-	if handler == nil {
-		return
+	if handler != nil {
+		handler(forward.Key, lostErr)
 	}
-
-	if exitErr == nil {
-		exitErr = portforward.ErrLostConnectionToPod
-	}
-	handler(forward.Key, exitErr)
 }
 
 func (p *portForwardClient) StopPortForward(key string) error {

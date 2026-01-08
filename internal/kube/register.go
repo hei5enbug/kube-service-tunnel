@@ -192,7 +192,7 @@ func (m *kubeAdapter) registerService(
 		return ServiceTunnel{}, fmt.Errorf("find available port: %w", err)
 	}
 
-	forwardKey, err := m.portForwardClient.StartPortForward(ctx, contextName, svc.Namespace, pod.Name, localPort, podPort, config, clientset)
+	forwardKey, err := m.portForwardClient.StartPortForward(withExpectedPodUID(ctx, pod.UID), contextName, svc.Namespace, pod.Name, localPort, podPort, config, clientset)
 	if err != nil {
 		return ServiceTunnel{}, fmt.Errorf("start port forward: %w", err)
 	}
