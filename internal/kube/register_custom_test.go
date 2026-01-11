@@ -3,7 +3,6 @@ package kube
 import (
 	"context"
 	"fmt"
-	"net"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,6 +23,7 @@ func customAdapter(forwards *fakePortForwardClient, services ...Service) *kubeAd
 }
 
 func TestServiceRefEffectiveHostname(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		ref  ServiceRef
@@ -34,6 +34,7 @@ func TestServiceRefEffectiveHostname(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			ref := tt.ref
 
@@ -49,9 +50,11 @@ func TestServiceRefEffectiveHostname(t *testing.T) {
 }
 
 func TestRegisterServicePortForwardLocalPort(t *testing.T) {
+	t.Parallel()
 	t.Run("원하는 포트가 비어 있으면 그 포트를 쓰고 요청 포트를 기록한다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		preferred := firstFreePortFrom(t, 45000)
+		preferred := freeLocalPort(t)
 		forwards := &fakePortForwardClient{}
 		adapter := customAdapter(forwards, httpService("web", "app", selectorApp))
 		usedPorts := map[int32]bool{}
@@ -69,13 +72,9 @@ func TestRegisterServicePortForwardLocalPort(t *testing.T) {
 	})
 
 	t.Run("원하는 포트를 이미 점유했거나 다른 터널이 쓰면 자동 포트로 대체하고 요청 포트는 유지한다", func(t *testing.T) {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("listen: %v", err)
-		}
-		defer listener.Close()
-		busyPort := int32(listener.Addr().(*net.TCPAddr).Port)
-		usedPort := firstFreePortFrom(t, 46000)
+		t.Parallel()
+		busyPort := occupyLocalPort(t)
+		usedPort := freeLocalPort(t)
 
 		tests := []struct {
 			name      string
@@ -87,6 +86,7 @@ func TestRegisterServicePortForwardLocalPort(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
 				// given
 				adapter := customAdapter(&fakePortForwardClient{}, httpService("web", "app", selectorApp))
 
@@ -105,6 +105,7 @@ func TestRegisterServicePortForwardLocalPort(t *testing.T) {
 	})
 
 	t.Run("선택한 파드의 UID를 포워딩에 묶는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		forwards := &fakePortForwardClient{}
 		pod := readyPod("web-1")
@@ -122,6 +123,7 @@ func TestRegisterServicePortForwardLocalPort(t *testing.T) {
 	})
 
 	t.Run("사용자 지정 호스트 이름이 DNS 주소가 된다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := customAdapter(&fakePortForwardClient{}, httpService("web", "app", selectorApp))
 
@@ -136,7 +138,9 @@ func TestRegisterServicePortForwardLocalPort(t *testing.T) {
 }
 
 func TestRegisterServicesForContextCustomSettings(t *testing.T) {
+	t.Parallel()
 	t.Run("사용자 지정 호스트 이름이 소유자 확인, 진행 상황, 기록되는 소유자, DNS 주소를 결정한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := customAdapter(&fakePortForwardClient{},
 			httpService("web", "app", selectorApp), httpService("api", "app", selectorApp), httpService("db", "app", selectorApp))
@@ -181,8 +185,9 @@ func TestRegisterServicesForContextCustomSettings(t *testing.T) {
 	})
 
 	t.Run("대상의 원하는 포트를 적용하고 다른 대상은 자동 포트를 쓴다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		preferred := firstFreePortFrom(t, 47000)
+		preferred := freeLocalPort(t)
 		adapter := customAdapter(&fakePortForwardClient{}, httpService("web", "app", selectorApp), httpService("api", "app", selectorApp))
 		targets := []ServiceRef{{Namespace: "app", Name: "web", LocalPort: preferred}, {Namespace: "app", Name: "api"}}
 
@@ -200,13 +205,9 @@ func TestRegisterServicesForContextCustomSettings(t *testing.T) {
 }
 
 func TestCheckLocalPort(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-	busyPort := int32(listener.Addr().(*net.TCPAddr).Port)
-	freePort := firstFreePortFrom(t, 48000)
+	t.Parallel()
+	busyPort := occupyLocalPort(t)
+	freePort := freeLocalPort(t)
 
 	tests := []struct {
 		name string
@@ -223,6 +224,7 @@ func TestCheckLocalPort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			port, used := tt.port, tt.used
 
@@ -241,9 +243,14 @@ func TestCheckLocalPort(t *testing.T) {
 }
 
 func TestNextFreeLocalPort(t *testing.T) {
+	t.Parallel()
 	t.Run("사용 중으로 표시된 포트를 건너뛰고 40000 이상의 포트를 고른다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		first := firstFreePortFrom(t, minLocalPort)
+		first, firstErr := NextFreeLocalPort(nil)
+		if firstErr != nil {
+			t.Fatalf("NextFreeLocalPort() error = %v", firstErr)
+		}
 
 		// when
 		got, err := NextFreeLocalPort(map[int32]bool{first: true})
@@ -256,7 +263,9 @@ func TestNextFreeLocalPort(t *testing.T) {
 }
 
 func TestStartForward(t *testing.T) {
+	t.Parallel()
 	t.Run("포워딩을 열기 전에 파드를 한 번 읽어 그 UID를 포워딩에 묶는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		forwards := &fakePortForwardClient{}
 		adapter := customAdapter(forwards)
@@ -274,6 +283,7 @@ func TestStartForward(t *testing.T) {
 	})
 
 	t.Run("파드를 읽지 못하면 포워딩을 열지 않고 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		forwards := &fakePortForwardClient{}
 		adapter := customAdapter(forwards)
@@ -290,6 +300,7 @@ func TestStartForward(t *testing.T) {
 	})
 
 	t.Run("원격 포트와 로컬 포트를 올바른 순서로 포트 포워드 클라이언트에 전달한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		forwards := &fakePortForwardClient{}
 		adapter := customAdapter(forwards)
@@ -308,6 +319,7 @@ func TestStartForward(t *testing.T) {
 	})
 
 	t.Run("클라이언트 생성에 실패하면 포워드를 시작하지 않고 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		forwards := &fakePortForwardClient{}
 		adapter := customAdapter(forwards)

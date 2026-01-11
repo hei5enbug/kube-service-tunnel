@@ -9,6 +9,8 @@ import (
 )
 
 func TestNormalizeHostname(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		input   string
@@ -38,6 +40,8 @@ func TestNormalizeHostname(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			input := tt.input
 
@@ -59,7 +63,11 @@ func TestNormalizeHostname(t *testing.T) {
 }
 
 func TestRegisterDNSTunnelCustomSettings(t *testing.T) {
+	t.Parallel()
+
 	t.Run("사용자 지정 호스트 이름과 포트로 등록하고 활성화된 터널을 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		target := kube.ServiceRef{Namespace: "default", Name: "web", Hostname: "  Web.Local. ", LocalPort: 41000}
@@ -83,6 +91,8 @@ func TestRegisterDNSTunnelCustomSettings(t *testing.T) {
 	})
 
 	t.Run("잘못된 호스트 이름이나 포트는 쿠버네티스를 호출하지 않고 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		tests := []struct {
 			name   string
 			target kube.ServiceRef
@@ -95,6 +105,8 @@ func TestRegisterDNSTunnelCustomSettings(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
 				// given
 				manager, kubeFake, _, _ := newTestManager()
 
@@ -110,6 +122,8 @@ func TestRegisterDNSTunnelCustomSettings(t *testing.T) {
 	})
 
 	t.Run("같은 서비스는 다른 호스트 이름으로도 두 번 등록할 수 없다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
@@ -129,6 +143,8 @@ func TestRegisterDNSTunnelCustomSettings(t *testing.T) {
 	})
 
 	t.Run("다른 서비스가 쓰는 사용자 지정 호스트 이름은 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, _, _, _ := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", kube.ServiceRef{Namespace: "default", Name: "web", Hostname: "shared.local"}); err != nil {
@@ -146,7 +162,11 @@ func TestRegisterDNSTunnelCustomSettings(t *testing.T) {
 }
 
 func TestRegisterServicesCustomSettings(t *testing.T) {
+	t.Parallel()
+
 	t.Run("잘못된 대상은 실패로, 이미 등록된 서비스는 건너뜀으로 분류하고 나머지만 넘긴다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "ns", Name: "dup", Hostname: "dup.local"}); err != nil {
@@ -187,6 +207,8 @@ func TestRegisterServicesCustomSettings(t *testing.T) {
 	})
 
 	t.Run("모든 대상이 걸러지면 쿠버네티스를 호출하지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		targets := []kube.ServiceRef{{Namespace: "ns", Name: "bad", Hostname: "-x"}}

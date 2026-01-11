@@ -32,6 +32,10 @@ type App struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// work counts the manager and kube goroutines that key handlers start, so that tests can wait for them.
+	work        sync.WaitGroup
+	frameTicker frameTicker
+
 	pages       *tview.Pages
 	body        *tview.Flex
 	left        *tview.Flex
@@ -62,6 +66,7 @@ type dependencies struct {
 	copier      clipboard.Copier
 	store       *store.Store
 	screen      tcell.Screen
+	frameTicker frameTicker
 }
 
 // screenRef holds the screen seen by the last draw, for the OSC 52 fallback that runs off the UI goroutine.
@@ -156,6 +161,10 @@ func newApp(ctx context.Context, cancel context.CancelFunc, deps dependencies) *
 		ctx:         ctx,
 		cancel:      cancel,
 		theme:       themes[0],
+		frameTicker: deps.frameTicker,
+	}
+	if a.frameTicker == nil {
+		a.frameTicker = newFrameTicker
 	}
 	if a.copier == nil {
 		a.copier = clipboard.NewSystem()
@@ -196,6 +205,15 @@ func (a *App) setupUI() {
 		AddItem(a.hints, 1, 0, false)
 	a.pages = tview.NewPages().AddPage(mainPage, root, true, true)
 	a.applyTheme()
+}
+
+// background runs fn on its own goroutine, which may queue UI updates.
+func (a *App) background(fn func()) {
+	a.work.Add(1)
+	go func() {
+		defer a.work.Done()
+		fn()
+	}()
 }
 
 func (a *App) quitOnSignal(sigChan <-chan os.Signal) {

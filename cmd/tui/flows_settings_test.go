@@ -40,7 +40,9 @@ func (r *runningApp) serviceCells(t *testing.T, key string) []string {
 }
 
 func TestRememberedSettings(t *testing.T) {
+	t.Parallel()
 	t.Run("잃은 터널을 Enter로 다시 등록하면 편집에서 기억한 이름과 포트를 쓴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)
@@ -70,6 +72,7 @@ func TestRememberedSettings(t *testing.T) {
 	})
 
 	t.Run("Ctrl+P 대상은 서비스마다 기억한 설정을 담는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.remember(t, "api", "admin", store.TunnelSetting{Hostname: "admin.local", LocalPort: 3001})
@@ -92,6 +95,7 @@ func TestRememberedSettings(t *testing.T) {
 	})
 
 	t.Run("요청한 포트가 바쁘면 등록은 경고로 대신 쓴 포트를 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := servicesApp(t, withManager(&fakeManager{busyFallback: 40002}))
 		running.remember(t, "api", "web", store.TunnelSetting{Hostname: "api.local", LocalPort: 8080})
@@ -109,6 +113,7 @@ func TestRememberedSettings(t *testing.T) {
 }
 
 func TestServicesPaneMarkers(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		tunnel   dns.DNSTunnel
@@ -120,6 +125,7 @@ func TestServicesPaneMarkers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := startLoadedApp(t, withManager(&fakeManager{tunnels: []dns.DNSTunnel{tc.tunnel}}))
 

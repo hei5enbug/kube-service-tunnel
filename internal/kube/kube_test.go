@@ -7,7 +7,9 @@ import (
 )
 
 func TestCurrentContext(t *testing.T) {
+	t.Parallel()
 	t.Run("컨텍스트 클라이언트가 알려준 현재 컨텍스트 이름을 그대로 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := &kubeAdapter{contextClient: &fakeContextClient{current: "dev"}}
 
@@ -21,6 +23,7 @@ func TestCurrentContext(t *testing.T) {
 	})
 
 	t.Run("컨텍스트 클라이언트의 오류를 그대로 전달한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		cause := errors.New("bad kubeconfig")
 		adapter := &kubeAdapter{contextClient: &fakeContextClient{currentErr: cause}}

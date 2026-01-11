@@ -181,7 +181,7 @@ func (a *App) registerService() {
 	if !a.store.TryBeginLoading(fmt.Sprintf("Registering %s in %s", row.Hostname(), row.Context)) {
 		return
 	}
-	go a.runRegister(row.Context, row.Target)
+	a.background(func() { a.runRegister(row.Context, row.Target) })
 }
 
 // registerRefusal explains why Enter does not register the row, or returns "" when it may.

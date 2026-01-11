@@ -23,7 +23,9 @@ func sampleResources() map[string]kube.ContextResources {
 }
 
 func TestLoadingLabel(t *testing.T) {
+	t.Parallel()
 	t.Run("TryBeginLoading은 라벨을 함께 기록한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -37,6 +39,7 @@ func TestLoadingLabel(t *testing.T) {
 	})
 
 	t.Run("실패한 TryBeginLoading은 기존 라벨을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.TryBeginLoading("first")
@@ -51,6 +54,7 @@ func TestLoadingLabel(t *testing.T) {
 	})
 
 	t.Run("SetLoadingLabel은 로딩 중에만 라벨을 바꾼다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.TryBeginLoading("start")
@@ -65,6 +69,7 @@ func TestLoadingLabel(t *testing.T) {
 	})
 
 	t.Run("로딩이 아니면 SetLoadingLabel은 무시된다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -78,6 +83,7 @@ func TestLoadingLabel(t *testing.T) {
 	})
 
 	t.Run("로딩을 끝내면 라벨도 지운다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.TryBeginLoading("busy")
@@ -93,6 +99,7 @@ func TestLoadingLabel(t *testing.T) {
 }
 
 func TestSetAllResources(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		preferred string
@@ -104,6 +111,7 @@ func TestSetAllResources(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			s := NewStore()
 
@@ -122,6 +130,7 @@ func TestSetAllResources(t *testing.T) {
 	}
 
 	t.Run("첫 네임스페이스를 기본으로 고르고 그 서비스를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -140,7 +149,9 @@ func TestSetAllResources(t *testing.T) {
 }
 
 func TestSetContextResources(t *testing.T) {
+	t.Parallel()
 	t.Run("새로 고친 컨텍스트만 바꾸고 선택한 네임스페이스는 남아 있으면 유지한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetAllResources(sampleResources(), "dev")
@@ -168,6 +179,7 @@ func TestSetContextResources(t *testing.T) {
 	})
 
 	t.Run("선택한 네임스페이스가 사라지면 첫 네임스페이스를 고른다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetAllResources(sampleResources(), "dev")
@@ -185,6 +197,7 @@ func TestSetContextResources(t *testing.T) {
 	})
 
 	t.Run("비활성 컨텍스트를 새로 고쳐도 선택은 바뀌지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetAllResources(sampleResources(), "dev")
@@ -202,7 +215,9 @@ func TestSetContextResources(t *testing.T) {
 }
 
 func TestActivate(t *testing.T) {
+	t.Parallel()
 	t.Run("ActivateContext는 그 컨텍스트의 첫 네임스페이스를 고른다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetAllResources(sampleResources(), "dev")
@@ -218,6 +233,7 @@ func TestActivate(t *testing.T) {
 	})
 
 	t.Run("ActivateNamespace는 그 네임스페이스의 서비스를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetAllResources(sampleResources(), "dev")
@@ -233,6 +249,7 @@ func TestActivate(t *testing.T) {
 	})
 
 	t.Run("TunnelsChanged는 터널 리비전을 올린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -246,6 +263,7 @@ func TestActivate(t *testing.T) {
 	})
 
 	t.Run("SetFocus는 포커스 영역을 바꾼다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 

@@ -13,8 +13,6 @@ const (
 	lockFileMode    = 0o644
 )
 
-var flock = syscall.Flock
-
 var ErrAlreadyRunning = errors.New("another kube-service-tunnel instance is already running")
 
 type Lock struct {
@@ -25,6 +23,11 @@ type Lock struct {
 
 // Acquire takes an exclusive, non-blocking lock on path that lasts until Release or process exit.
 func Acquire(path string) (*Lock, error) {
+	return acquireWith(path, syscall.Flock)
+}
+
+// acquireWith is Acquire with the flock call injected.
+func acquireWith(path string, flock func(fd, how int) error) (*Lock, error) {
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, lockFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file %s: %w", path, err)

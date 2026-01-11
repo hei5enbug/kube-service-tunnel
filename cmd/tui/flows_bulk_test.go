@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
@@ -13,9 +12,6 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
-
-// settleDelay lets already injected keys reach the event loop before asserting that nothing happened.
-const settleDelay = 100 * time.Millisecond
 
 func (r *runningApp) openConfirm(t *testing.T) {
 	t.Helper()
@@ -30,7 +26,9 @@ func (r *runningApp) confirmClosed(t *testing.T) bool {
 }
 
 func TestBulkConfirmation(t *testing.T) {
+	t.Parallel()
 	t.Run("Ctrl+P는 Cancel에 포커스를 둔 확인 창을 연다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -60,6 +58,7 @@ func TestBulkConfirmation(t *testing.T) {
 	}
 	for _, tc := range cancelKeys {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := startLoadedApp(t)
 			running.openConfirm(t)
@@ -77,6 +76,7 @@ func TestBulkConfirmation(t *testing.T) {
 	}
 
 	t.Run("y는 활성 컨텍스트가 아니라 커서 아래 컨텍스트의 서비스로 한 번 등록한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.moveCursorTo(t, store.FocusContexts, "prod")
@@ -99,6 +99,7 @@ func TestBulkConfirmation(t *testing.T) {
 	})
 
 	t.Run("오른쪽 화살표로 Register를 고르고 Enter를 누르면 등록한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.openConfirm(t)
@@ -118,6 +119,7 @@ func TestBulkConfirmation(t *testing.T) {
 	})
 
 	t.Run("확인을 거듭 눌러도 등록은 한 번만 실행된다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		gate := make(chan struct{})
 		running := startLoadedApp(t, withManager(&fakeManager{bulkGate: gate}))
@@ -127,14 +129,14 @@ func TestBulkConfirmation(t *testing.T) {
 		running.typeText("yy")
 
 		// then
-		eventually(t, "bulk running", func() bool { return len(running.manager.bulkCalls()) == 1 })
-		time.Sleep(settleDelay)
+		running.settle(t, gate)
 		if calls := running.manager.bulkCalls(); len(calls) != 1 {
 			t.Fatalf("bulk calls = %d, want 1", len(calls))
 		}
 	})
 
 	t.Run("이미 로딩 중이면 startBulk는 두 번째 실행을 시작하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		gate := make(chan struct{})
 		running := startLoadedApp(t, withManager(&fakeManager{bulkGate: gate}))
@@ -147,14 +149,14 @@ func TestBulkConfirmation(t *testing.T) {
 		})
 
 		// then
-		eventually(t, "bulk running", func() bool { return len(running.manager.bulkCalls()) == 1 })
-		time.Sleep(settleDelay)
+		running.settle(t, gate)
 		if calls := running.manager.bulkCalls(); len(calls) != 1 {
 			t.Fatalf("bulk calls = %d, want 1", len(calls))
 		}
 	})
 
 	t.Run("등록할 서비스가 없으면 창을 열지 않고 경고한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		manager := &fakeManager{tunnels: []dns.DNSTunnel{tunnel("prod", "shop", "cart"), tunnel("prod", "shop", "pay")}}
 		running := startLoadedApp(t, withManager(manager))
@@ -172,7 +174,9 @@ func TestBulkConfirmation(t *testing.T) {
 }
 
 func TestBulkResult(t *testing.T) {
+	t.Parallel()
 	t.Run("결과 요약을 상태 줄에 보이고 실패와 건너뜀을 한 기록의 다음 줄들에 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		manager := &fakeManager{bulkResult: dns.BulkRegistrationResult{
 			Registered: []dns.DNSTunnel{tunnel("dev", "api", "admin")},
@@ -208,6 +212,7 @@ func TestBulkResult(t *testing.T) {
 	})
 
 	t.Run("등록 호출이 오류를 돌려주면 오류 수준으로 보인다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t, withManager(&fakeManager{bulkErr: errors.New("shutting down")}))
 		running.openConfirm(t)
@@ -224,7 +229,9 @@ func TestBulkResult(t *testing.T) {
 }
 
 func TestConfirmTextScrolls(t *testing.T) {
+	t.Parallel()
 	t.Run("확인 창 글이 창보다 길면 아래 화살표로 스크롤되고 포커스는 버튼에 남는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		text := strings.Repeat("a long context name that wraps over many lines ", 20)

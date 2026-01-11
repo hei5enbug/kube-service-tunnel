@@ -4,7 +4,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
@@ -13,7 +12,9 @@ import (
 )
 
 func TestEnterOnEmptyPanes(t *testing.T) {
+	t.Parallel()
 	t.Run("Contexts 창에 행이 없으면 Enter는 아무 일도 하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 
@@ -21,13 +22,14 @@ func TestEnterOnEmptyPanes(t *testing.T) {
 		running.press(tcell.KeyEnter)
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if !running.focusIs(t, store.FocusContexts) || running.app.store.GetState().Status.ID != 0 {
 			t.Fatal("Enter on an empty Contexts pane must do nothing")
 		}
 	})
 
 	t.Run("Namespaces 창에 행이 없으면 Enter는 포커스를 옮기지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.typeText("2")
@@ -37,13 +39,14 @@ func TestEnterOnEmptyPanes(t *testing.T) {
 		running.press(tcell.KeyEnter)
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if !running.focusIs(t, store.FocusNamespaces) {
 			t.Fatal("focus left the empty Namespaces pane")
 		}
 	})
 
 	t.Run("필터에 걸린 서비스가 없으면 Enter는 등록하지 않고 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := servicesApp(t)
 		running.applyFilter(t, store.FocusServices, "no-such-service")
@@ -59,6 +62,7 @@ func TestEnterOnEmptyPanes(t *testing.T) {
 	})
 
 	t.Run("다른 작업이 진행 중이면 서비스를 등록하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := servicesApp(t)
 		running.moveCursorTo(t, store.FocusServices, serviceKey("api", "web"))
@@ -68,7 +72,7 @@ func TestEnterOnEmptyPanes(t *testing.T) {
 		running.onUI(t, running.app.registerService)
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if calls := running.manager.registerCalls(); len(calls) != 0 {
 			t.Fatalf("register calls = %v, want none", calls)
 		}
@@ -76,7 +80,9 @@ func TestEnterOnEmptyPanes(t *testing.T) {
 }
 
 func TestFilteredPanesRender(t *testing.T) {
+	t.Parallel()
 	t.Run("Namespaces 창의 필터는 이름이 맞는 네임스페이스만 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.typeText("2")
@@ -93,6 +99,7 @@ func TestFilteredPanesRender(t *testing.T) {
 	})
 
 	t.Run("Services 창의 필터는 이름이 맞는 서비스만 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := servicesApp(t)
 
@@ -108,7 +115,9 @@ func TestFilteredPanesRender(t *testing.T) {
 }
 
 func TestEmptyDetails(t *testing.T) {
+	t.Parallel()
 	t.Run("네임스페이스가 하나도 없는 컨텍스트에서 Namespaces 상세는 컨텍스트 정보를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		lonely := &fakeKube{current: "lonely", resources: map[string]kube.ContextResources{"lonely": {Namespaces: map[string][]kube.Service{}}}}
 		running := startLoadedApp(t, withKube(lonely))
@@ -127,6 +136,7 @@ func TestEmptyDetails(t *testing.T) {
 	})
 
 	t.Run("컨텍스트가 없으면 Namespaces 상세 대신 안내를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.typeText("2")
@@ -141,7 +151,9 @@ func TestEmptyDetails(t *testing.T) {
 }
 
 func TestHistoryWithoutEvents(t *testing.T) {
+	t.Parallel()
 	t.Run("기록이 비어 있으면 F2는 안내 문구를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 
@@ -157,7 +169,9 @@ func TestHistoryWithoutEvents(t *testing.T) {
 }
 
 func TestDeleteTunnelGuards(t *testing.T) {
+	t.Parallel()
 	t.Run("커서 아래 터널이 없으면 d 키는 알리기만 한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, nil)
 
@@ -172,6 +186,7 @@ func TestDeleteTunnelGuards(t *testing.T) {
 	})
 
 	t.Run("다른 작업이 진행 중이면 터널을 지우지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "web")})
 		running.app.store.TryBeginLoading("busy")
@@ -180,13 +195,14 @@ func TestDeleteTunnelGuards(t *testing.T) {
 		running.onUI(t, running.app.deleteTunnel)
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if got := running.manager.unregistered(); len(got) != 0 {
 			t.Fatalf("unregistered = %v, want none", got)
 		}
 	})
 
 	t.Run("지우기가 실패하면 오류로 알리고 터널을 목록에 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		manager := &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}, unregisterErr: errors.New("port busy")}
 		running := tunnelsApp(t, manager.tunnels, withManager(manager))

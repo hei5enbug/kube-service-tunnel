@@ -58,7 +58,7 @@ func (store *Store) Notify(level Level, text string) uint64 {
 		return true
 	})
 	if !level.Sticky() && store.statusTTL > 0 {
-		time.AfterFunc(store.statusTTL, func() { store.ExpireStatus(id) })
+		store.afterFunc(store.statusTTL, func() { store.ExpireStatus(id) })
 	}
 	return id
 }

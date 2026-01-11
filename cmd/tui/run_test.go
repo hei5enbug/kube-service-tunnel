@@ -80,7 +80,9 @@ func (h *runHarness) wait(t *testing.T) error {
 }
 
 func TestRunStartup(t *testing.T) {
+	t.Parallel()
 	t.Run("kube 어댑터를 만들지 못하면 매니저를 만들지 않고 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapterErr := errors.New("no kubeconfig")
 		managerCreated := false
@@ -105,6 +107,7 @@ func TestRunStartup(t *testing.T) {
 	})
 
 	t.Run("매니저를 만들지 못하면 오류를 돌려주고 신호를 구독하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		managerErr := errors.New("no root")
 		watched := false
@@ -130,6 +133,7 @@ func TestRunStartup(t *testing.T) {
 	})
 
 	t.Run("kubeconfig 경로를 어댑터에 넘기고 시작하면 컨텍스트 탐색을 시작한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := startRun(t, &fakeManager{})
 		h.waitRunning(t)
@@ -150,7 +154,9 @@ func TestRunStartup(t *testing.T) {
 }
 
 func TestRunShutdown(t *testing.T) {
+	t.Parallel()
 	t.Run("Ctrl+C로 종료하면 매니저를 정리하고 신호 구독을 풀며 오류가 없다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := startRun(t, &fakeManager{})
 		h.waitRunning(t)
@@ -172,6 +178,7 @@ func TestRunShutdown(t *testing.T) {
 	})
 
 	t.Run("종료 신호를 받으면 화면 입력 없이도 종료하고 매니저를 정리한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := startRun(t, &fakeManager{})
 		h.waitRunning(t)
@@ -190,6 +197,7 @@ func TestRunShutdown(t *testing.T) {
 	})
 
 	t.Run("정리에 실패하면 cleanup 오류로 감싸서 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		cleanupErr := errors.New("forward still open")
 		h := startRun(t, &fakeManager{cleanupErr: cleanupErr})
@@ -207,7 +215,9 @@ func TestRunShutdown(t *testing.T) {
 }
 
 func TestQuitOnSignal(t *testing.T) {
+	t.Parallel()
 	t.Run("컨텍스트가 먼저 끝나면 신호를 기다리지 않고 앱도 멈추지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		returned := make(chan error, 1)
@@ -223,14 +233,18 @@ func TestQuitOnSignal(t *testing.T) {
 		if !waitFor(returned, eventLoopTimeout) {
 			t.Fatal("quitOnSignal did not return after the context ended")
 		}
+		if !eventLoopResponds(running.app.app) {
+			t.Fatal("app stopped without a signal")
+		}
 		select {
 		case <-running.done:
 			t.Fatal("app stopped without a signal")
-		case <-time.After(settleDelay):
+		default:
 		}
 	})
 
 	t.Run("신호를 받으면 앱을 멈추고 컨텍스트를 취소한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		signals := make(chan os.Signal, 1)
@@ -250,7 +264,9 @@ func TestQuitOnSignal(t *testing.T) {
 }
 
 func TestNewAppDefaults(t *testing.T) {
+	t.Parallel()
 	t.Run("복사기를 주지 않으면 시스템 클립보드를 쓴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
@@ -265,6 +281,7 @@ func TestNewAppDefaults(t *testing.T) {
 	})
 }
 
+// The signal test is not parallel: delivering a signal to the test process affects every goroutine in it.
 func TestNotifyShutdownSignals(t *testing.T) {
 	t.Run("SIGHUP을 받으면 신호 채널로 전달한다", func(t *testing.T) {
 		// given

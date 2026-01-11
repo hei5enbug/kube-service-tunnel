@@ -121,7 +121,7 @@ func (a *App) deleteTunnel() {
 	if !a.store.TryBeginLoading("Removing " + url + "…") {
 		return
 	}
-	go a.runDelete(tunnel.DNSURL, url)
+	a.background(func() { a.runDelete(tunnel.DNSURL, url) })
 }
 
 func (a *App) runDelete(dnsURL, url string) {
@@ -141,7 +141,7 @@ func (a *App) copyTunnelURL() {
 		a.store.Notify(store.LevelInfo, "No tunnel under the cursor")
 		return
 	}
-	go a.copyText(tunnelURL(tunnel))
+	a.background(func() { a.copyText(tunnelURL(tunnel)) })
 }
 
 // copyText runs off the UI goroutine. It falls back to OSC 52 when the system clipboard fails.

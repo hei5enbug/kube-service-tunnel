@@ -2,11 +2,14 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/byoungmin/kube-service-tunnel/internal/kube/kubetest"
 )
 
 func writeRawKubeconfig(t *testing.T, content string) string {
@@ -18,43 +21,15 @@ func writeRawKubeconfig(t *testing.T, content string) string {
 	return path
 }
 
-func TestDefaultKubeconfigPath_HomeUnavailable(t *testing.T) {
-	t.Run("홈 디렉터리를 알 수 없으면 오류를 낸다", func(t *testing.T) {
-		// given
-		if os.Geteuid() == 0 {
-			t.Skip("requires a non-root process")
-		}
-		t.Setenv("HOME", "")
-
-		// when
-		got, err := DefaultKubeconfigPath()
-
-		// then
-		if err == nil || got != "" {
-			t.Fatalf("DefaultKubeconfigPath() = %q, %v, want error", got, err)
-		}
-	})
-}
-
 func TestNewContextClient(t *testing.T) {
+	t.Parallel()
 	t.Run("경로가 비어 있으면 기본 경로의 kubeconfig를 사용한다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		if os.Geteuid() == 0 {
-			t.Skip("requires a non-root process")
-		}
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv(sudoUserEnv, "")
-		defaultPath := filepath.Join(home, ".kube", "config")
-		if err := os.MkdirAll(filepath.Dir(defaultPath), 0o700); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(defaultPath, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
-			t.Fatalf("write kubeconfig: %v", err)
-		}
+		defaultPath := writeRawKubeconfig(t, "apiVersion: v1\nkind: Config\n")
 
 		// when
-		client, err := NewContextClient("")
+		client, err := newContextClient("", func() (string, error) { return defaultPath, nil })
 
 		// then
 		if err != nil || client.kubeconfigPath != defaultPath {
@@ -63,14 +38,12 @@ func TestNewContextClient(t *testing.T) {
 	})
 
 	t.Run("경로가 비어 있고 홈 디렉터리를 알 수 없으면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		if os.Geteuid() == 0 {
-			t.Skip("requires a non-root process")
-		}
-		t.Setenv("HOME", "")
+		homeUnavailable := func() (string, error) { return "", errors.New("no home directory") }
 
 		// when
-		client, err := NewContextClient("")
+		client, err := newContextClient("", homeUnavailable)
 
 		// then
 		if err == nil || client != nil {
@@ -79,6 +52,7 @@ func TestNewContextClient(t *testing.T) {
 	})
 
 	t.Run("kubeconfig 파일이 없으면 경로를 담은 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		missing := filepath.Join(t.TempDir(), "missing")
 
@@ -93,9 +67,11 @@ func TestNewContextClient(t *testing.T) {
 }
 
 func TestContextClient_ListContexts(t *testing.T) {
+	t.Parallel()
 	t.Run("kubeconfig의 컨텍스트를 이름순으로 클러스터와 사용자와 함께 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		path := writeKubeconfig(t, "dev", map[string]string{"prod": "http://127.0.0.1:1", "dev": "http://127.0.0.1:2"})
+		path := kubetest.WriteKubeconfig(t, "dev", map[string]string{"prod": "http://127.0.0.1:1", "dev": "http://127.0.0.1:2"})
 		client, err := NewContextClient(path)
 		if err != nil {
 			t.Fatalf("NewContextClient() error = %v", err)
@@ -115,6 +91,7 @@ func TestContextClient_ListContexts(t *testing.T) {
 	})
 
 	t.Run("컨텍스트가 없는 kubeconfig는 빈 목록을 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client, err := NewContextClient(writeRawKubeconfig(t, "apiVersion: v1\nkind: Config\n"))
 		if err != nil {
@@ -131,6 +108,7 @@ func TestContextClient_ListContexts(t *testing.T) {
 	})
 
 	t.Run("kubeconfig가 손상되었으면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client, err := NewContextClient(writeRawKubeconfig(t, "clusters: [unterminated"))
 		if err != nil {
@@ -148,9 +126,11 @@ func TestContextClient_ListContexts(t *testing.T) {
 }
 
 func TestContextClient_GetCurrentContext(t *testing.T) {
+	t.Parallel()
 	t.Run("kubeconfig의 현재 컨텍스트 이름을 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		client, err := NewContextClient(writeKubeconfig(t, "prod", map[string]string{"prod": "http://127.0.0.1:1", "dev": "http://127.0.0.1:2"}))
+		client, err := NewContextClient(kubetest.WriteKubeconfig(t, "prod", map[string]string{"prod": "http://127.0.0.1:1", "dev": "http://127.0.0.1:2"}))
 		if err != nil {
 			t.Fatalf("NewContextClient() error = %v", err)
 		}
@@ -165,6 +145,7 @@ func TestContextClient_GetCurrentContext(t *testing.T) {
 	})
 
 	t.Run("kubeconfig가 손상되었으면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client, err := NewContextClient(writeRawKubeconfig(t, "clusters: [unterminated"))
 		if err != nil {
@@ -182,6 +163,7 @@ func TestContextClient_GetCurrentContext(t *testing.T) {
 }
 
 func TestLoadKubeconfigWithContext(t *testing.T) {
+	t.Parallel()
 	servers := map[string]string{"dev": "http://127.0.0.1:11111", "prod": "http://127.0.0.1:22222"}
 
 	tests := []struct {
@@ -195,8 +177,9 @@ func TestLoadKubeconfigWithContext(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
-			path := writeKubeconfig(t, "dev", servers)
+			path := kubetest.WriteKubeconfig(t, "dev", servers)
 
 			// when
 			config, err := LoadKubeconfigWithContext(path, tt.contextName)
@@ -209,8 +192,9 @@ func TestLoadKubeconfigWithContext(t *testing.T) {
 	}
 
 	t.Run("loadKubeconfig는 현재 컨텍스트를 사용한다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		path := writeKubeconfig(t, "prod", servers)
+		path := kubetest.WriteKubeconfig(t, "prod", servers)
 
 		// when
 		config, err := loadKubeconfig(path)
@@ -222,31 +206,30 @@ func TestLoadKubeconfigWithContext(t *testing.T) {
 	})
 
 	t.Run("경로가 비어 있으면 기본 경로의 kubeconfig를 읽는다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		if os.Geteuid() == 0 {
-			t.Skip("requires a non-root process")
-		}
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv(sudoUserEnv, "")
-		source := writeKubeconfig(t, "dev", servers)
-		data, err := os.ReadFile(source)
-		if err != nil {
-			t.Fatalf("read kubeconfig: %v", err)
-		}
-		if err := os.MkdirAll(filepath.Join(home, ".kube"), 0o700); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(home, ".kube", "config"), data, 0o600); err != nil {
-			t.Fatalf("write kubeconfig: %v", err)
-		}
+		defaultPath := kubetest.WriteKubeconfig(t, "dev", servers)
 
 		// when
-		config, err := LoadKubeconfigWithContext("", "")
+		config, err := loadKubeconfigFrom("", "", func() (string, error) { return defaultPath, nil })
 
 		// then
 		if err != nil || config.Host != servers["dev"] {
-			t.Fatalf("LoadKubeconfigWithContext() = %+v, %v, want host %q", config, err, servers["dev"])
+			t.Fatalf("loadKubeconfigFrom() = %+v, %v, want host %q", config, err, servers["dev"])
+		}
+	})
+
+	t.Run("경로가 비어 있고 홈 디렉터리를 알 수 없으면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		homeUnavailable := func() (string, error) { return "", errors.New("no home directory") }
+
+		// when
+		config, err := loadKubeconfigFrom("", "", homeUnavailable)
+
+		// then
+		if err == nil || config != nil || !strings.Contains(err.Error(), "no home directory") {
+			t.Fatalf("loadKubeconfigFrom() = %+v, %v, want the home directory error", config, err)
 		}
 	})
 
@@ -256,10 +239,6 @@ func TestLoadKubeconfigWithContext(t *testing.T) {
 		context string
 		wantErr string
 	}{
-		{"경로가 비어 있고 홈 디렉터리를 알 수 없으면 오류를 낸다", func(t *testing.T) string {
-			t.Setenv("HOME", "")
-			return ""
-		}, "", "home directory"},
 		{"kubeconfig 파일이 없으면 오류를 낸다", func(t *testing.T) string {
 			return filepath.Join(t.TempDir(), "missing")
 		}, "", "kubeconfig file not found"},
@@ -267,16 +246,14 @@ func TestLoadKubeconfigWithContext(t *testing.T) {
 			return writeRawKubeconfig(t, "clusters: [unterminated")
 		}, "", "build config from flags"},
 		{"없는 컨텍스트를 지정하면 오류를 낸다", func(t *testing.T) string {
-			return writeKubeconfig(t, "dev", servers)
+			return kubetest.WriteKubeconfig(t, "dev", servers)
 		}, "ghost", "build config from flags"},
 	}
 
 	for _, tt := range errorTests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
-			if os.Geteuid() == 0 {
-				t.Skip("requires a non-root process")
-			}
 			path := tt.path(t)
 
 			// when
@@ -291,9 +268,11 @@ func TestLoadKubeconfigWithContext(t *testing.T) {
 }
 
 func TestNewClientForContext(t *testing.T) {
+	t.Parallel()
 	t.Run("지정한 컨텍스트의 서버를 가리키는 설정과 클라이언트를 만든다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		path := writeKubeconfig(t, "dev", map[string]string{"dev": "http://127.0.0.1:11111", "prod": "http://127.0.0.1:22222"})
+		path := kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": "http://127.0.0.1:11111", "prod": "http://127.0.0.1:22222"})
 
 		// when
 		config, clientset, err := newClientForContext(path, "prod")
@@ -305,6 +284,7 @@ func TestNewClientForContext(t *testing.T) {
 	})
 
 	t.Run("kubeconfig를 읽지 못하면 로드 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		missing := filepath.Join(t.TempDir(), "missing")
 
@@ -318,6 +298,7 @@ func TestNewClientForContext(t *testing.T) {
 	})
 
 	t.Run("설정으로 클라이언트를 만들 수 없으면 생성 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		raw := "apiVersion: v1\nkind: Config\ncurrent-context: dev\n" +
 			"clusters:\n- name: c\n  cluster:\n    server: https://127.0.0.1:1\n    certificate-authority-data: bm90IGEgY2VydGlmaWNhdGU=\n" +

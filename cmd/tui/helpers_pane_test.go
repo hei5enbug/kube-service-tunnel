@@ -11,7 +11,9 @@ import (
 )
 
 func TestPaneLookup(t *testing.T) {
+	t.Parallel()
 	t.Run("알 수 없는 영역을 찾으면 첫 창을 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 
@@ -26,7 +28,9 @@ func TestPaneLookup(t *testing.T) {
 }
 
 func TestRenameKey(t *testing.T) {
+	t.Parallel()
 	t.Run("키가 있으면 그 행의 키만 새 이름으로 바꾼다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		p := &pane{keys: []string{"admin.api", "web.api"}}
 		original := p.keys
@@ -44,6 +48,7 @@ func TestRenameKey(t *testing.T) {
 	})
 
 	t.Run("키가 없으면 아무것도 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		p := &pane{keys: []string{"admin.api"}}
 
@@ -58,7 +63,9 @@ func TestRenameKey(t *testing.T) {
 }
 
 func TestSelectedRowsWithoutRows(t *testing.T) {
+	t.Parallel()
 	t.Run("행이 없으면 선택된 행이 없다고 답한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 
@@ -79,9 +86,11 @@ func TestSelectedRowsWithoutRows(t *testing.T) {
 }
 
 func TestTunnelView(t *testing.T) {
+	t.Parallel()
 	rows := []dns.DNSTunnel{tunnel("dev", "api", "web"), tunnel("prod", "shop", "cart")}
 
 	t.Run("파드 열을 켜면 머리글과 각 행에 파드 이름이 들어간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		withPod := true
 
@@ -95,6 +104,7 @@ func TestTunnelView(t *testing.T) {
 	})
 
 	t.Run("파드 열을 끄면 URL과 컨텍스트 열만 남는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		withPod := false
 
@@ -109,7 +119,9 @@ func TestTunnelView(t *testing.T) {
 }
 
 func TestEmptyPortList(t *testing.T) {
+	t.Parallel()
 	t.Run("포트가 없는 서비스는 none으로 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		var ports []kube.ServicePort
 
@@ -124,7 +136,9 @@ func TestEmptyPortList(t *testing.T) {
 }
 
 func TestButtonStyle(t *testing.T) {
+	t.Parallel()
 	t.Run("흑백 테마의 버튼은 기본 스타일이다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		mono := themes[slices.IndexFunc(themes, func(theme Theme) bool { return theme.Monochrome })]
 
@@ -138,6 +152,7 @@ func TestButtonStyle(t *testing.T) {
 	})
 
 	t.Run("색 테마의 버튼은 글자색과 테두리색 배경을 쓴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		dark := themes[0]
 

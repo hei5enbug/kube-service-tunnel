@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
@@ -72,6 +71,7 @@ func (r *runningApp) fillEdit(hostname, port string) {
 }
 
 func TestEditDialogOpens(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		tunnel   dns.DNSTunnel
@@ -84,6 +84,7 @@ func TestEditDialogOpens(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tc.tunnel}})
 
@@ -107,6 +108,7 @@ func TestEditDialogOpens(t *testing.T) {
 	}
 
 	t.Run("커서 아래 터널이 없으면 창을 열지 않고 안내한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{})
 
@@ -128,6 +130,7 @@ func fallbackTunnel() dns.DNSTunnel {
 }
 
 func TestEditDialogKeys(t *testing.T) {
+	t.Parallel()
 	focusCases := []struct {
 		name string
 		keys []tcell.Key
@@ -141,6 +144,7 @@ func TestEditDialogKeys(t *testing.T) {
 	}
 	for _, tc := range focusCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 			running.openEditDialog(t)
@@ -171,6 +175,7 @@ func TestEditDialogKeys(t *testing.T) {
 	}
 	for _, tc := range closeCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 			running.openEditDialog(t)
@@ -191,6 +196,7 @@ func TestEditDialogKeys(t *testing.T) {
 	}
 
 	t.Run("칸에 d를 입력하면 글자로 들어가고 터널을 지우지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)
@@ -200,7 +206,7 @@ func TestEditDialogKeys(t *testing.T) {
 
 		// then
 		eventually(t, "typed text", func() bool { return running.focusedText(t) == "d4" })
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if got := running.manager.unregistered(); len(got) != 0 {
 			t.Fatalf("unregistered = %v, want none", got)
 		}
@@ -210,6 +216,7 @@ func TestEditDialogKeys(t *testing.T) {
 	})
 
 	t.Run("Local port 칸은 숫자만 다섯 자리까지 받는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)
@@ -224,6 +231,7 @@ func TestEditDialogKeys(t *testing.T) {
 }
 
 func TestEditValidation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		hostname  string
@@ -238,6 +246,7 @@ func TestEditValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 			running.openEditDialog(t)
@@ -262,7 +271,9 @@ func TestEditValidation(t *testing.T) {
 }
 
 func TestEditSave(t *testing.T) {
+	t.Parallel()
 	t.Run("Local port에서 Enter는 옛 주소와 새 이름과 포트로 한 번 갱신하고 설정을 기억한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)
@@ -286,6 +297,7 @@ func TestEditSave(t *testing.T) {
 	})
 
 	t.Run("기본 이름을 직접 적고 Save 버튼을 누르면 빈 이름으로 보내고 바뀐 것이 없다고 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)
@@ -307,6 +319,7 @@ func TestEditSave(t *testing.T) {
 	})
 
 	t.Run("두 칸을 비우고 저장하면 기본값으로 되돌리고 기억한 설정을 지운다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		custom := withLocalPort(tunnelAt("dev", "api", "web", "api.local"), 8080)
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{custom}})
@@ -330,6 +343,7 @@ func TestEditSave(t *testing.T) {
 	})
 
 	t.Run("이름을 바꾸면 순서가 바뀌어도 커서가 그 터널을 따라간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "admin"), tunnel("dev", "api", "web")}})
 		running.moveCursorTo(t, store.FocusTunnels, "web.api")
@@ -354,7 +368,9 @@ func TestEditSave(t *testing.T) {
 }
 
 func TestRenameWithFilter(t *testing.T) {
+	t.Parallel()
 	t.Run("필터에 맞지 않는 이름으로 바꾸면 필터를 지우고 커서가 그 터널에 남는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "admin"), tunnel("dev", "api", "web")}})
 		running.typeText("/web")
@@ -385,7 +401,9 @@ func (r *runningApp) clearFocused(count int) {
 }
 
 func TestEditFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("옛 설정 정리만 실패하면 경고하고 설정은 기억한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		cleanupErr := errors.Join(dns.ErrUpdateCleanup, errors.New("remove hosts entry web.api: busy"))
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}, updateErr: cleanupErr})
@@ -407,6 +425,7 @@ func TestEditFailures(t *testing.T) {
 	})
 
 	t.Run("다른 오류면 오류를 알리고 설정을 기억하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		updateErr := errors.New("local port 8080 is already in use on 127.0.0.1")
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}, updateErr: updateErr})
@@ -429,7 +448,9 @@ func TestEditFailures(t *testing.T) {
 }
 
 func TestEditKeepsEventLoopAlive(t *testing.T) {
+	t.Parallel()
 	t.Run("편집 창을 열고 닫은 뒤에도 이벤트 루프가 응답하고 표 단축키가 다시 동작한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)

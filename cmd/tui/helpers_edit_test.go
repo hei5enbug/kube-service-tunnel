@@ -11,6 +11,7 @@ import (
 )
 
 func TestParseEdit(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		hostname     string
@@ -26,6 +27,7 @@ func TestParseEdit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			web := tunnel("dev", "api", "web")
 
@@ -51,6 +53,7 @@ func TestParseEdit(t *testing.T) {
 	}
 	for _, tc := range failures {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			web := tunnel("dev", "api", "web")
 
@@ -66,7 +69,9 @@ func TestParseEdit(t *testing.T) {
 }
 
 func TestBulkReportBusyPorts(t *testing.T) {
+	t.Parallel()
 	t.Run("요청한 포트가 바빴던 터널마다 한 줄을 붙이고 성공을 경고로 올린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		result := dns.BulkRegistrationResult{Registered: []dns.DNSTunnel{fallbackTunnel(), tunnel("dev", "api", "admin")}}
 		plan := bulkPlan{Context: "dev", Targets: make([]kube.ServiceRef, 2)}
@@ -82,6 +87,7 @@ func TestBulkReportBusyPorts(t *testing.T) {
 	})
 
 	t.Run("오류가 있으면 바쁜 포트가 있어도 오류 수준이다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		result := dns.BulkRegistrationResult{Registered: []dns.DNSTunnel{fallbackTunnel()}}
 		plan := bulkPlan{Context: "dev", Targets: make([]kube.ServiceRef, 2)}
@@ -97,6 +103,7 @@ func TestBulkReportBusyPorts(t *testing.T) {
 }
 
 func TestTunnelDetailTexts(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		tunnel       dns.DNSTunnel
@@ -109,6 +116,7 @@ func TestTunnelDetailTexts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			subject := tc.tunnel
 
@@ -124,7 +132,9 @@ func TestTunnelDetailTexts(t *testing.T) {
 }
 
 func TestEditHintsAndHelp(t *testing.T) {
+	t.Parallel()
 	t.Run("Tunnels 힌트는 d delete 앞에 e edit를 둔다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		scope := scopeTunnels
 
@@ -138,6 +148,7 @@ func TestEditHintsAndHelp(t *testing.T) {
 	})
 
 	t.Run("편집 창 힌트는 좁아도 종료 키를 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		width := 30
 
@@ -151,6 +162,7 @@ func TestEditHintsAndHelp(t *testing.T) {
 	})
 
 	t.Run("도움말은 e 키와 설정이 실행 중에만 남는다는 것과 ○ 표시를 설명한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		theme := themes[2]
 
@@ -167,6 +179,7 @@ func TestEditHintsAndHelp(t *testing.T) {
 }
 
 func TestServiceDetailsRegistration(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		row  serviceRow
@@ -179,6 +192,7 @@ func TestServiceDetailsRegistration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			row := tc.row
 

@@ -32,11 +32,9 @@ func (f *faultyTemp) WriteString(s string) (int, error) {
 	return f.File.WriteString(s)
 }
 
+// Sync skips the real fsync, which is slow on some filesystems and irrelevant to what the tests assert.
 func (f *faultyTemp) Sync() error {
-	if f.syncErr != nil {
-		return f.syncErr
-	}
-	return f.File.Sync()
+	return f.syncErr
 }
 
 func (f *faultyTemp) Chmod(mode os.FileMode) error {
@@ -88,11 +86,9 @@ func (f *faultyRewrite) Truncate(size int64) error {
 	return f.File.Truncate(size)
 }
 
+// Sync skips the real fsync, which is slow on some filesystems and irrelevant to what the tests assert.
 func (f *faultyRewrite) Sync() error {
-	if f.faults.syncErr != nil {
-		return f.faults.syncErr
-	}
-	return f.File.Sync()
+	return f.faults.syncErr
 }
 
 func (f *faultyRewrite) Close() error {
@@ -103,21 +99,10 @@ func (f *faultyRewrite) Close() error {
 	return realErr
 }
 
-// restoreSeams puts the production file operations back after the test.
-func restoreSeams(t *testing.T) {
-	t.Helper()
-	create, rename, open, uid := createTempFile, renameFile, openForRewrite, effectiveUID
-	t.Cleanup(func() {
-		createTempFile, renameFile, openForRewrite, effectiveUID = create, rename, open, uid
-	})
-}
-
-// stubRewriteOpens makes the n-th in-place open use the n-th faults entry; later opens are healthy.
-func stubRewriteOpens(t *testing.T, faults ...rewriteFaults) *int {
-	t.Helper()
-	restoreSeams(t)
+// withRewriteOpens returns ops whose n-th in-place open uses the n-th faults entry; later opens are healthy.
+func withRewriteOpens(ops fileOps, faults ...rewriteFaults) (fileOps, *int) {
 	attempts := 0
-	openForRewrite = func(path string) (rewriteFile, error) {
+	ops.openForRewrite = func(path string) (rewriteFile, error) {
 		var current rewriteFaults
 		if attempts < len(faults) {
 			current = faults[attempts]
@@ -132,23 +117,22 @@ func stubRewriteOpens(t *testing.T, faults ...rewriteFaults) *int {
 		}
 		return &faultyRewrite{File: f, faults: current}, nil
 	}
-	return &attempts
+	return ops, &attempts
 }
 
-func stubRenameFailure(t *testing.T) *[]string {
-	t.Helper()
+// withRenameFailure returns ops whose rename always fails and records the destinations it was asked for.
+func withRenameFailure(ops fileOps) (fileOps, *[]string) {
 	var destinations []string
-	renameFile = func(oldpath, newpath string) error {
+	ops.rename = func(oldpath, newpath string) error {
 		destinations = append(destinations, newpath)
 		return errInjectedRename
 	}
-	return &destinations
+	return ops, &destinations
 }
 
-func stubFaultyTemp(t *testing.T, build func(*faultyTemp)) {
-	t.Helper()
-	restoreSeams(t)
-	createTempFile = func(dir, pattern string) (tempFile, error) {
+// withFaultyTemp returns ops whose temp files fail as configured by build.
+func withFaultyTemp(ops fileOps, build func(*faultyTemp)) fileOps {
+	ops.createTemp = func(dir, pattern string) (tempFile, error) {
 		f, err := os.CreateTemp(dir, pattern)
 		if err != nil {
 			return nil, err
@@ -157,6 +141,13 @@ func stubFaultyTemp(t *testing.T, build func(*faultyTemp)) {
 		build(tmp)
 		return tmp, nil
 	}
+	return ops
+}
+
+// withUID returns ops reporting uid as the effective user.
+func withUID(ops fileOps, uid int) fileOps {
+	ops.effectiveUID = func() int { return uid }
+	return ops
 }
 
 func hostsFixture(t *testing.T, content string) (string, os.FileInfo) {
@@ -188,6 +179,8 @@ type stubInfo struct{ os.FileInfo }
 func (stubInfo) Sys() any { return nil }
 
 func TestWriteTempBesideErrors(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name    string
 		uid     int
@@ -204,14 +197,14 @@ func TestWriteTempBesideErrors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name+"이고 임시 파일을 지운다", func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			path, info := hostsFixture(t, baseHosts)
-			stubFaultyTemp(t, tc.build)
-			uid := tc.uid
-			effectiveUID = func() int { return uid }
+			ops := withUID(withFaultyTemp(defaultFileOps(), tc.build), tc.uid)
 
 			// when
-			tmpPath, err := writeTempBeside(path, info, shortContent)
+			tmpPath, err := ops.writeTempBeside(path, info, shortContent)
 
 			// then
 			if !errors.Is(err, tc.wantErr) || !strings.Contains(err.Error(), tc.wantMsg) {
@@ -227,13 +220,15 @@ func TestWriteTempBesideErrors(t *testing.T) {
 	}
 
 	t.Run("임시 파일 생성이 실패하면 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, info := hostsFixture(t, baseHosts)
-		restoreSeams(t)
-		createTempFile = func(string, string) (tempFile, error) { return nil, errInjectedStep }
+		ops := defaultFileOps()
+		ops.createTemp = func(string, string) (tempFile, error) { return nil, errInjectedStep }
 
 		// when
-		_, err := writeTempBeside(path, info, shortContent)
+		_, err := ops.writeTempBeside(path, info, shortContent)
 
 		// then
 		if !errors.Is(err, errInjectedStep) || !strings.Contains(err.Error(), "create temp") {
@@ -243,12 +238,15 @@ func TestWriteTempBesideErrors(t *testing.T) {
 }
 
 func TestFillTempChown(t *testing.T) {
+	t.Parallel()
+
 	t.Run("루트 권한이면 원본 파일의 소유자와 그룹으로 변경한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, info := hostsFixture(t, baseHosts)
 		stat := info.Sys().(*syscall.Stat_t)
-		restoreSeams(t)
-		effectiveUID = func() int { return 0 }
+		ops := withUID(defaultFileOps(), 0)
 		file, err := os.CreateTemp(t.TempDir(), "tmp-*")
 		if err != nil {
 			t.Fatalf("create temp: %v", err)
@@ -257,7 +255,7 @@ func TestFillTempChown(t *testing.T) {
 		defer tmp.Close()
 
 		// when
-		err = fillTemp(tmp, info, shortContent)
+		err = ops.fillTemp(tmp, info, shortContent)
 
 		// then
 		if err != nil {
@@ -270,10 +268,11 @@ func TestFillTempChown(t *testing.T) {
 	})
 
 	t.Run("루트가 아니면 소유자를 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, info := hostsFixture(t, baseHosts)
-		restoreSeams(t)
-		effectiveUID = func() int { return 501 }
+		ops := withUID(defaultFileOps(), 501)
 		file, err := os.CreateTemp(t.TempDir(), "tmp-*")
 		if err != nil {
 			t.Fatalf("create temp: %v", err)
@@ -282,7 +281,7 @@ func TestFillTempChown(t *testing.T) {
 		defer tmp.Close()
 
 		// when
-		err = fillTemp(tmp, info, shortContent)
+		err = ops.fillTemp(tmp, info, shortContent)
 
 		// then
 		if err != nil || len(tmp.chownCalls) != 0 {
@@ -291,10 +290,11 @@ func TestFillTempChown(t *testing.T) {
 	})
 
 	t.Run("루트여도 소유자 정보를 알 수 없으면 소유자를 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, info := hostsFixture(t, baseHosts)
-		restoreSeams(t)
-		effectiveUID = func() int { return 0 }
+		ops := withUID(defaultFileOps(), 0)
 		file, err := os.CreateTemp(t.TempDir(), "tmp-*")
 		if err != nil {
 			t.Fatalf("create temp: %v", err)
@@ -303,7 +303,7 @@ func TestFillTempChown(t *testing.T) {
 		defer tmp.Close()
 
 		// when
-		err = fillTemp(tmp, stubInfo{info}, shortContent)
+		err = ops.fillTemp(tmp, stubInfo{info}, shortContent)
 
 		// then
 		if err != nil || len(tmp.chownCalls) != 0 {
@@ -313,16 +313,19 @@ func TestFillTempChown(t *testing.T) {
 }
 
 func TestWriteHostsFileFallback(t *testing.T) {
+	t.Parallel()
+
 	original := baseHosts + dockerBlock
 
 	t.Run("rename이 실패하면 제자리 쓰기로 새 내용을 쓰고 권한과 임시 파일 정리를 지킨다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, _ := hostsFixture(t, original)
-		restoreSeams(t)
-		stubRenameFailure(t)
+		ops, _ := withRenameFailure(defaultFileOps())
 
 		// when
-		err := writeHostsFile(path, shortContent, []byte(original))
+		err := ops.writeHostsFile(path, shortContent, []byte(original))
 
 		// then
 		if err != nil {
@@ -341,11 +344,13 @@ func TestWriteHostsFileFallback(t *testing.T) {
 	})
 
 	t.Run("제자리 쓰기를 파일을 비우지 않고 연다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, _ := hostsFixture(t, original)
 
 		// when
-		f, err := openForRewrite(path)
+		f, err := defaultFileOps().openForRewrite(path)
 
 		// then
 		if err != nil {
@@ -372,13 +377,15 @@ func TestWriteHostsFileFallback(t *testing.T) {
 
 	for _, tc := range failures {
 		t.Run("제자리 쓰기의 "+tc.name+"가 실패하면 원본을 복구하고 복구했다고 알린다", func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			path, _ := hostsFixture(t, original)
-			attempts := stubRewriteOpens(t, tc.faults)
-			stubRenameFailure(t)
+			ops, attempts := withRewriteOpens(defaultFileOps(), tc.faults)
+			ops, _ = withRenameFailure(ops)
 
 			// when
-			err := writeHostsFile(path, shortContent, []byte(original))
+			err := ops.writeHostsFile(path, shortContent, []byte(original))
 
 			// then
 			if err == nil {
@@ -412,13 +419,15 @@ func TestWriteHostsFileFallback(t *testing.T) {
 
 	for _, tc := range restoreFailures {
 		t.Run("복구의 "+tc.name+"까지 실패하면 세 오류를 함께 담아 복구하지 못했다고 알린다", func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			path, _ := hostsFixture(t, original)
-			stubRewriteOpens(t, rewriteFaults{writeErr: errInjectedWrite}, tc.restore)
-			stubRenameFailure(t)
+			ops, _ := withRewriteOpens(defaultFileOps(), rewriteFaults{writeErr: errInjectedWrite}, tc.restore)
+			ops, _ = withRenameFailure(ops)
 
 			// when
-			err := writeHostsFile(path, shortContent, []byte(original))
+			err := ops.writeHostsFile(path, shortContent, []byte(original))
 
 			// then
 			if err == nil {
@@ -436,13 +445,15 @@ func TestWriteHostsFileFallback(t *testing.T) {
 	}
 
 	t.Run("잘라내기 실패로 새 내용 뒤에 원본이 남아도 복구하면 원본과 같다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, _ := hostsFixture(t, original)
-		stubRewriteOpens(t, rewriteFaults{truncateErr: errInjectedWrite})
-		stubRenameFailure(t)
+		ops, _ := withRewriteOpens(defaultFileOps(), rewriteFaults{truncateErr: errInjectedWrite})
+		ops, _ = withRenameFailure(ops)
 
 		// when
-		err := writeHostsFile(path, shortContent, []byte(original))
+		err := ops.writeHostsFile(path, shortContent, []byte(original))
 
 		// then
 		if err == nil {
@@ -455,7 +466,11 @@ func TestWriteHostsFileFallback(t *testing.T) {
 }
 
 func TestWriteHostsFilePaths(t *testing.T) {
+	t.Parallel()
+
 	t.Run("심볼릭 링크 경로는 대상 파일의 실제 경로로 rename한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		dir := t.TempDir()
 		target := filepath.Join(dir, "real-hosts")
@@ -468,15 +483,15 @@ func TestWriteHostsFilePaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("eval symlinks: %v", err)
 		}
-		restoreSeams(t)
+		ops := defaultFileOps()
 		var renamed string
-		renameFile = func(oldpath, newpath string) error {
+		ops.rename = func(oldpath, newpath string) error {
 			renamed = newpath
 			return os.Rename(oldpath, newpath)
 		}
 
 		// when
-		err = writeHostsFile(link, shortContent, []byte(baseHosts))
+		err = ops.writeHostsFile(link, shortContent, []byte(baseHosts))
 
 		// then
 		if err != nil {
@@ -491,6 +506,8 @@ func TestWriteHostsFilePaths(t *testing.T) {
 	})
 
 	t.Run("심볼릭 링크 경로에서 rename이 실패해도 링크를 유지하고 대상 파일에 쓴다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		dir := t.TempDir()
 		target := filepath.Join(dir, "real-hosts")
@@ -499,11 +516,10 @@ func TestWriteHostsFilePaths(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatalf("symlink: %v", err)
 		}
-		restoreSeams(t)
-		stubRenameFailure(t)
+		ops, _ := withRenameFailure(defaultFileOps())
 
 		// when
-		err := writeHostsFile(link, shortContent, []byte(baseHosts))
+		err := ops.writeHostsFile(link, shortContent, []byte(baseHosts))
 
 		// then
 		if err != nil {
@@ -518,11 +534,13 @@ func TestWriteHostsFilePaths(t *testing.T) {
 	})
 
 	t.Run("경로를 해석할 수 없으면 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "missing")
 
 		// when
-		err := writeHostsFile(path, shortContent, nil)
+		err := defaultFileOps().writeHostsFile(path, shortContent, nil)
 
 		// then
 		if err == nil || !strings.Contains(err.Error(), "resolve hosts file path") {
@@ -531,12 +549,14 @@ func TestWriteHostsFilePaths(t *testing.T) {
 	})
 
 	t.Run("임시 파일 준비가 실패하면 오류를 반환하고 원본을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, _ := hostsFixture(t, baseHosts)
-		stubFaultyTemp(t, func(f *faultyTemp) { f.writeErr = errInjectedStep })
+		ops := withFaultyTemp(defaultFileOps(), func(f *faultyTemp) { f.writeErr = errInjectedStep })
 
 		// when
-		err := writeHostsFile(path, shortContent, []byte(baseHosts))
+		err := ops.writeHostsFile(path, shortContent, []byte(baseHosts))
 
 		// then
 		if !errors.Is(err, errInjectedStep) {
@@ -549,12 +569,16 @@ func TestWriteHostsFilePaths(t *testing.T) {
 }
 
 func TestDefaultFileOperations(t *testing.T) {
+	t.Parallel()
+
 	t.Run("존재하지 않는 디렉터리에서는 임시 파일 생성이 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		dir := filepath.Join(t.TempDir(), "missing")
 
 		// when
-		tmp, err := createTempFile(dir, tempFilePattern)
+		tmp, err := defaultFileOps().createTemp(dir, tempFilePattern)
 
 		// then
 		if err == nil || tmp != nil {
@@ -563,11 +587,13 @@ func TestDefaultFileOperations(t *testing.T) {
 	})
 
 	t.Run("존재하지 않는 파일은 제자리 쓰기용으로 열 수 없다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "missing")
 
 		// when
-		f, err := openForRewrite(path)
+		f, err := defaultFileOps().openForRewrite(path)
 
 		// then
 		if err == nil || f != nil {

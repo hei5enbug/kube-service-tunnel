@@ -9,13 +9,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"github.com/byoungmin/kube-service-tunnel/internal/kube/kubetest"
 )
 
 func TestNamespaceClient_ListNamespaces(t *testing.T) {
+	t.Parallel()
 	t.Run("API 서버의 네임스페이스를 시스템 네임스페이스까지 모두 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{namespaces: []string{"default", "kube-system", "app"}})
-		client, err := NewNamespaceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Namespaces: []string{"default", "kube-system", "app"}})
+		client, err := NewNamespaceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 		if err != nil {
 			t.Fatalf("NewNamespaceClient() error = %v", err)
 		}
@@ -31,10 +35,11 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 	})
 
 	t.Run("컨텍스트 이름이 다르면 해당 컨텍스트의 서버에서 조회한다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		dev := newFakeAPI(t, apiFixture{namespaces: []string{"dev-ns"}})
-		prod := newFakeAPI(t, apiFixture{namespaces: []string{"prod-ns"}})
-		client, _ := NewNamespaceClient(writeKubeconfig(t, "dev", map[string]string{"dev": dev.URL(), "prod": prod.URL()}))
+		dev := kubetest.NewServer(t, kubetest.Config{Namespaces: []string{"dev-ns"}})
+		prod := kubetest.NewServer(t, kubetest.Config{Namespaces: []string{"prod-ns"}})
+		client, _ := NewNamespaceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": dev.URL(), "prod": prod.URL()}))
 
 		// when
 		got, err := client.ListNamespaces(context.Background(), "prod")
@@ -46,9 +51,10 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 	})
 
 	t.Run("네임스페이스가 없으면 빈 목록을 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{})
-		client, _ := NewNamespaceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{})
+		client, _ := NewNamespaceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		got, err := client.ListNamespaces(context.Background(), "dev")
@@ -60,9 +66,10 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 	})
 
 	t.Run("API 서버가 오류를 돌려주면 목록 조회 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{failures: map[string]int{"/api/v1/namespaces": 500}})
-		client, _ := NewNamespaceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Failures: map[string]int{"/api/v1/namespaces": 500}})
+		client, _ := NewNamespaceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		got, err := client.ListNamespaces(context.Background(), "dev")
@@ -74,9 +81,10 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 	})
 
 	t.Run("API 서버가 인가를 거부하면 목록 조회 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{failures: map[string]int{"/api/v1/namespaces": 403}})
-		client, _ := NewNamespaceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Failures: map[string]int{"/api/v1/namespaces": 403}})
+		client, _ := NewNamespaceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		_, err := client.ListNamespaces(context.Background(), "dev")
@@ -88,6 +96,7 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 	})
 
 	t.Run("kubeconfig를 읽지 못하면 로드 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client, _ := NewNamespaceClient(filepath.Join(t.TempDir(), "missing"))
 
@@ -101,9 +110,10 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 	})
 
 	t.Run("없는 컨텍스트를 지정하면 로드 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{})
-		client, _ := NewNamespaceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{})
+		client, _ := NewNamespaceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		_, err := client.ListNamespaces(context.Background(), "ghost")
@@ -115,6 +125,7 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 	})
 
 	t.Run("설정으로 클라이언트를 만들 수 없으면 생성 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		raw := "apiVersion: v1\nkind: Config\ncurrent-context: dev\n" +
 			"clusters:\n- name: c\n  cluster:\n    server: https://127.0.0.1:1\n    certificate-authority-data: bm90IGEgY2VydGlmaWNhdGU=\n" +
@@ -133,9 +144,10 @@ func TestNamespaceClient_ListNamespaces(t *testing.T) {
 }
 
 func TestServiceClient_ListServices(t *testing.T) {
+	t.Parallel()
 	services := map[string][]corev1.Service{"app": {
-		clusterIPService("app", "web", map[string]string{"app": "web"}),
-		clusterIPService("app", "named", map[string]string{"app": "named"},
+		kubetest.ClusterIPService("app", "web", map[string]string{"app": "web"}),
+		kubetest.ClusterIPService("app", "named", map[string]string{"app": "named"},
 			corev1.ServicePort{Name: "http", Port: 8080, TargetPort: intstr.FromString("web"), Protocol: corev1.ProtocolTCP}),
 		{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, ClusterIP: "10.0.0.2"}},
 		{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, ClusterIP: "10.0.0.3"}},
@@ -143,9 +155,10 @@ func TestServiceClient_ListServices(t *testing.T) {
 	}}
 
 	t.Run("NodePort와 LoadBalancer와 헤드리스 서비스를 제외한 서비스만 변환해 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{services: services})
-		client, err := NewServiceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Services: services})
+		client, err := NewServiceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 		if err != nil {
 			t.Fatalf("NewServiceClient() error = %v", err)
 		}
@@ -167,9 +180,10 @@ func TestServiceClient_ListServices(t *testing.T) {
 	})
 
 	t.Run("서비스가 없는 네임스페이스는 빈 목록을 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{services: services})
-		client, _ := NewServiceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Services: services})
+		client, _ := NewServiceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		got, err := client.ListServices(context.Background(), "empty", "dev")
@@ -181,9 +195,10 @@ func TestServiceClient_ListServices(t *testing.T) {
 	})
 
 	t.Run("API 서버가 오류를 돌려주면 네임스페이스를 담은 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{failures: map[string]int{"/api/v1/namespaces/app/services": 500}})
-		client, _ := NewServiceClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Failures: map[string]int{"/api/v1/namespaces/app/services": 500}})
+		client, _ := NewServiceClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		got, err := client.ListServices(context.Background(), "app", "dev")
@@ -195,6 +210,7 @@ func TestServiceClient_ListServices(t *testing.T) {
 	})
 
 	t.Run("kubeconfig를 읽지 못하면 로드 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client, _ := NewServiceClient(filepath.Join(t.TempDir(), "missing"))
 
@@ -209,15 +225,17 @@ func TestServiceClient_ListServices(t *testing.T) {
 }
 
 func TestPodClient_ListPods(t *testing.T) {
+	t.Parallel()
 	pods := map[string][]corev1.Pod{"app": {
-		runningCorePod("app", "web-1", map[string]string{"app": "web"}, true),
-		runningCorePod("app", "db-1", map[string]string{"app": "db"}, false),
+		kubetest.RunningPod("app", "web-1", map[string]string{"app": "web"}, true),
+		kubetest.RunningPod("app", "db-1", map[string]string{"app": "db"}, false),
 	}}
 
 	t.Run("네임스페이스의 모든 파드를 변환해 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{pods: pods})
-		client, err := NewPodClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Pods: pods})
+		client, err := NewPodClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 		if err != nil {
 			t.Fatalf("NewPodClient() error = %v", err)
 		}
@@ -238,9 +256,10 @@ func TestPodClient_ListPods(t *testing.T) {
 	})
 
 	t.Run("API 서버가 오류를 돌려주면 네임스페이스를 담은 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{failures: map[string]int{"/api/v1/namespaces/app/pods": 500}})
-		client, _ := NewPodClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Failures: map[string]int{"/api/v1/namespaces/app/pods": 500}})
+		client, _ := NewPodClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		got, err := client.ListPods(context.Background(), "app", "dev")
@@ -252,6 +271,7 @@ func TestPodClient_ListPods(t *testing.T) {
 	})
 
 	t.Run("kubeconfig를 읽지 못하면 로드 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client, _ := NewPodClient(filepath.Join(t.TempDir(), "missing"))
 
@@ -266,10 +286,11 @@ func TestPodClient_ListPods(t *testing.T) {
 }
 
 func TestPodClient_FindMatchingPods(t *testing.T) {
+	t.Parallel()
 	pods := map[string][]corev1.Pod{"app": {
-		runningCorePod("app", "web-1", map[string]string{"app": "web", "tier": "front"}, true),
-		runningCorePod("app", "web-2", map[string]string{"app": "web", "tier": "back"}, true),
-		runningCorePod("app", "db-1", map[string]string{"app": "db"}, true),
+		kubetest.RunningPod("app", "web-1", map[string]string{"app": "web", "tier": "front"}, true),
+		kubetest.RunningPod("app", "web-2", map[string]string{"app": "web", "tier": "back"}, true),
+		kubetest.RunningPod("app", "db-1", map[string]string{"app": "db"}, true),
 	}}
 
 	tests := []struct {
@@ -284,9 +305,10 @@ func TestPodClient_FindMatchingPods(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
-			api := newFakeAPI(t, apiFixture{pods: pods})
-			client, _ := NewPodClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+			api := kubetest.NewServer(t, kubetest.Config{Pods: pods})
+			client, _ := NewPodClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 			// when
 			got, err := client.FindMatchingPods(context.Background(), "app", "dev", tt.selector)
@@ -299,16 +321,17 @@ func TestPodClient_FindMatchingPods(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(names, tt.want) {
 				t.Fatalf("FindMatchingPods() = %v, %v, want %v", names, err, tt.want)
 			}
-			if requests := api.requestsTo("/pods"); len(requests) != 1 || !strings.Contains(requests[0], "labelSelector=") {
+			if requests := api.RequestsTo("/pods"); len(requests) != 1 || !strings.Contains(requests[0], "labelSelector=") {
 				t.Fatalf("requests = %v, want one pod list with a label selector", requests)
 			}
 		})
 	}
 
 	t.Run("API 서버가 오류를 돌려주면 셀렉터 조회 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{failures: map[string]int{"/api/v1/namespaces/app/pods": 500}})
-		client, _ := NewPodClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Failures: map[string]int{"/api/v1/namespaces/app/pods": 500}})
+		client, _ := NewPodClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		got, err := client.FindMatchingPods(context.Background(), "app", "dev", map[string]string{"app": "web"})
@@ -320,6 +343,7 @@ func TestPodClient_FindMatchingPods(t *testing.T) {
 	})
 
 	t.Run("kubeconfig를 읽지 못하면 로드 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client, _ := NewPodClient(filepath.Join(t.TempDir(), "missing"))
 
@@ -333,8 +357,9 @@ func TestPodClient_FindMatchingPods(t *testing.T) {
 	})
 
 	t.Run("올바르지 않은 레이블 값은 셀렉터 생성 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		client, _ := NewPodClient(writeKubeconfig(t, "dev", map[string]string{"dev": "http://127.0.0.1:1"}))
+		client, _ := NewPodClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": "http://127.0.0.1:1"}))
 
 		// when
 		_, err := client.FindMatchingPods(context.Background(), "app", "dev", map[string]string{"app": "not valid!"})
@@ -347,13 +372,15 @@ func TestPodClient_FindMatchingPods(t *testing.T) {
 }
 
 func TestFindPodAndPortForService_RealPodClient(t *testing.T) {
+	t.Parallel()
 	t.Run("API 서버의 준비된 파드와 이름 있는 대상 포트를 해석한다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{pods: map[string][]corev1.Pod{"app": {
-			runningCorePod("app", "web-1", map[string]string{"app": "web"}, false),
-			runningCorePod("app", "web-2", map[string]string{"app": "web"}, true),
+		api := kubetest.NewServer(t, kubetest.Config{Pods: map[string][]corev1.Pod{"app": {
+			kubetest.RunningPod("app", "web-1", map[string]string{"app": "web"}, false),
+			kubetest.RunningPod("app", "web-2", map[string]string{"app": "web"}, true),
 		}}})
-		client, _ := NewPodClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		client, _ := NewPodClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		pod, port, err := FindPodAndPortForService(context.Background(), client, "app", "dev",
@@ -366,9 +393,10 @@ func TestFindPodAndPortForService_RealPodClient(t *testing.T) {
 	})
 
 	t.Run("파드 조회가 실패하면 파드 검색 오류로 감싼다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{failures: map[string]int{"/api/v1/namespaces/app/pods": 500}})
-		client, _ := NewPodClient(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+		api := kubetest.NewServer(t, kubetest.Config{Failures: map[string]int{"/api/v1/namespaces/app/pods": 500}})
+		client, _ := NewPodClient(kubetest.WriteKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
 
 		// when
 		_, _, err := FindPodAndPortForService(context.Background(), client, "app", "dev",

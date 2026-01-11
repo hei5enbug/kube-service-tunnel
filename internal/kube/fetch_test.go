@@ -22,7 +22,9 @@ func newFetchAdapter() *kubeAdapter {
 }
 
 func TestFetchAllResources(t *testing.T) {
+	t.Parallel()
 	t.Run("일부 컨텍스트와 네임스페이스가 실패해도 컨텍스트마다 부분 결과와 자기 오류를 담고 전체 오류는 없다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := newFetchAdapter()
 
@@ -53,6 +55,7 @@ func TestFetchAllResources(t *testing.T) {
 	})
 
 	t.Run("실패가 없으면 모든 컨텍스트의 오류가 비어 있다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := &kubeAdapter{
 			contextClient:   &fakeContextClient{contexts: []Context{{Name: "dev"}}},
@@ -70,6 +73,7 @@ func TestFetchAllResources(t *testing.T) {
 	})
 
 	t.Run("컨텍스트 목록을 읽지 못하면 오류만 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := &kubeAdapter{contextClient: &fakeContextClient{err: errors.New("bad kubeconfig")}}
 
@@ -84,7 +88,9 @@ func TestFetchAllResources(t *testing.T) {
 }
 
 func TestFetchContextResources(t *testing.T) {
+	t.Parallel()
 	t.Run("한 컨텍스트만 새로 조회하고 같은 규칙으로 부분 결과와 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := newFetchAdapter()
 
@@ -101,6 +107,7 @@ func TestFetchContextResources(t *testing.T) {
 	})
 
 	t.Run("네임스페이스 목록을 읽지 못하면 빈 결과와 컨텍스트 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := newFetchAdapter()
 

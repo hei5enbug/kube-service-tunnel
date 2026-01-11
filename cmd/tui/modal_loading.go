@@ -79,17 +79,25 @@ func (a *App) restoreFocus() {
 	}
 }
 
+// frameTicker returns the channel that advances the loading animation and the function that releases it.
+type frameTicker func() (ticks <-chan time.Time, stop func())
+
+func newFrameTicker() (<-chan time.Time, func()) {
+	ticker := time.NewTicker(loadingFrameInterval)
+	return ticker.C, ticker.Stop
+}
+
 // animateLoading runs on its own goroutine, so it may queue UI updates.
 func (a *App) animateLoading(stop <-chan struct{}) {
-	ticker := time.NewTicker(loadingFrameInterval)
-	defer ticker.Stop()
+	ticks, stopTicks := a.frameTicker()
+	defer stopTicks()
 	for {
 		select {
 		case <-stop:
 			return
 		case <-a.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 		}
 		a.app.QueueUpdateDraw(func() {
 			if a.loading == nil || a.loading.stop != stop {

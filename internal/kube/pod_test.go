@@ -14,9 +14,11 @@ import (
 var selectorApp = map[string]string{"app": "web"}
 
 func TestFindPodAndPortForService_PortResolution(t *testing.T) {
+	t.Parallel()
 	pod := readyPod("web-1", PodPort{Name: "metrics", ContainerPort: 9090}, PodPort{Name: "web", ContainerPort: 8081})
 
 	t.Run("이름이 있는 targetPort는 컨테이너 포트 이름으로 해석한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{pods: []Pod{pod}}
 		httpPort := &ServicePort{Port: 80, TargetPortName: "web"}
@@ -31,6 +33,7 @@ func TestFindPodAndPortForService_PortResolution(t *testing.T) {
 	})
 
 	t.Run("컨테이너에 같은 이름의 포트가 없으면 첫 포트로 대체하지 않고 포트와 파드 이름을 담아 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{pods: []Pod{pod}}
 		httpPort := &ServicePort{Port: 80, TargetPortName: "http-missing"}
@@ -48,6 +51,7 @@ func TestFindPodAndPortForService_PortResolution(t *testing.T) {
 	})
 
 	t.Run("정수 targetPort는 그대로 사용한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{pods: []Pod{pod}}
 		httpPort := &ServicePort{Port: 80, TargetPort: 7000, TargetPortName: "web"}
@@ -62,6 +66,7 @@ func TestFindPodAndPortForService_PortResolution(t *testing.T) {
 	})
 
 	t.Run("targetPort가 없으면 서비스 포트를 사용한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{pods: []Pod{pod}}
 		httpPort := &ServicePort{Port: 8080}
@@ -77,6 +82,7 @@ func TestFindPodAndPortForService_PortResolution(t *testing.T) {
 }
 
 func TestFindPodAndPortForService_PodChoice(t *testing.T) {
+	t.Parallel()
 	httpPort := &ServicePort{Port: 80}
 	pending := Pod{Name: "pending", Status: "Pending", Ready: true}
 	unready := Pod{Name: "unready", Status: "Running", Ready: false}
@@ -84,6 +90,7 @@ func TestFindPodAndPortForService_PodChoice(t *testing.T) {
 	healthy := Pod{Name: "healthy", Status: "Running", Ready: true}
 
 	t.Run("Pending 준비 안 됨 종료 중인 파드는 건너뛰고 정상 파드를 고른다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{pods: []Pod{pending, unready, terminating, healthy}}
 
@@ -97,6 +104,7 @@ func TestFindPodAndPortForService_PodChoice(t *testing.T) {
 	})
 
 	t.Run("준비된 파드가 하나도 없으면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{pods: []Pod{pending, unready, terminating}}
 
@@ -110,6 +118,7 @@ func TestFindPodAndPortForService_PodChoice(t *testing.T) {
 	})
 
 	t.Run("일치하는 파드가 없어도 준비된 파드가 없다는 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{}
 
@@ -124,7 +133,9 @@ func TestFindPodAndPortForService_PodChoice(t *testing.T) {
 }
 
 func TestFindPodAndPortForService_Selector(t *testing.T) {
+	t.Parallel()
 	t.Run("셀렉터가 없는 서비스는 파드를 조회하지 않고 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &fakePodClient{pods: []Pod{readyPod("any")}}
 
@@ -138,6 +149,7 @@ func TestFindPodAndPortForService_Selector(t *testing.T) {
 	})
 
 	t.Run("실제 파드 클라이언트도 빈 셀렉터를 거부한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := &podClient{kubeconfigPath: "/nonexistent/kubeconfig"}
 
@@ -152,10 +164,12 @@ func TestFindPodAndPortForService_Selector(t *testing.T) {
 }
 
 func TestPodFromCorev1(t *testing.T) {
+	t.Parallel()
 	now := metav1.NewTime(time.Now())
 	readyCondition := corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionTrue}
 
 	t.Run("Ready 조건이 True이고 삭제 시각이 없으면 준비된 파드로 변환한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		in := corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{readyCondition}}}
 
@@ -169,6 +183,7 @@ func TestPodFromCorev1(t *testing.T) {
 	})
 
 	t.Run("삭제 시각이 있으면 종료 중인 파드로 변환한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		in := corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
@@ -185,6 +200,7 @@ func TestPodFromCorev1(t *testing.T) {
 	})
 
 	t.Run("Ready 조건이 없으면 준비되지 않은 파드로 변환한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		in := corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}}
 
@@ -198,6 +214,7 @@ func TestPodFromCorev1(t *testing.T) {
 	})
 
 	t.Run("모든 컨테이너의 포트를 이름과 함께 담는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		in := corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{
 			{Ports: []corev1.ContainerPort{{Name: "web", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}}},

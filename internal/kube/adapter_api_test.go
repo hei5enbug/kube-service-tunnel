@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -13,34 +12,56 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+
+	"github.com/byoungmin/kube-service-tunnel/internal/kube/kubetest"
 )
 
 // newAPIAdapter builds a real adapter whose single context "dev" talks to a fake API server serving one
-// web service backed by one ready pod, with port forwards answered by an echoing SPDY server.
-func newAPIAdapter(t *testing.T) (KubeAdapterInterface, *spdyForwardServer, *fakeAPI) {
+// web service backed by one ready pod, with port forwards answered by the server's echoing SPDY endpoint.
+// The adapter's pod monitor retries after fastRetry instead of the production seconds.
+func newAPIAdapter(t *testing.T) (KubeAdapterInterface, *kubetest.Server) {
 	t.Helper()
-	forwardServer := newSPDYForwardServer(t)
-	api := newFakeAPI(t, apiFixture{
-		namespaces: []string{"app", "kube-system"},
-		services: map[string][]corev1.Service{"app": {
-			clusterIPService("app", "web", map[string]string{"app": "web"}),
-			clusterIPService("app", "ext", nil),
+	server := kubetest.NewServer(t, kubetest.Config{
+		Namespaces: []string{"app", "kube-system"},
+		Services: map[string][]corev1.Service{"app": {
+			kubetest.ClusterIPService("app", "web", map[string]string{"app": "web"}),
+			kubetest.ClusterIPService("app", "ext", nil),
 		}},
-		pods: map[string][]corev1.Pod{"app": {
-			runningCorePod("app", "web-1", map[string]string{"app": "web"}, true),
+		Pods: map[string][]corev1.Pod{"app": {
+			kubetest.RunningPod("app", "web-1", map[string]string{"app": "web"}, true),
 		}},
-		forward: forwardServer,
 	})
-	adapter, err := NewKubeAdapter(writeKubeconfig(t, "dev", map[string]string{"dev": api.URL()}))
+	adapter, err := NewKubeAdapter(server.Kubeconfig("dev"))
 	if err != nil {
 		t.Fatalf("NewKubeAdapter() error = %v", err)
 	}
+	adapter.(*kubeAdapter).portForwardClient = newFastWatchForwardClient()
 	t.Cleanup(adapter.StopAllPortForwards)
-	return adapter, forwardServer, api
+	return adapter, server
+}
+
+// newFastWatchForwardClient returns a real port forward client whose pod monitor retries after fastRetry.
+func newFastWatchForwardClient() *portForwardClient {
+	client := newPortForwardClient(runPortForward, testWait)
+	client.detectLoss = func(ctx context.Context, clientset kubernetes.Interface, namespace, pod string, expected types.UID) error {
+		watcher := &podWatch{
+			pods:        clientset.CoreV1().Pods(namespace),
+			namespace:   namespace,
+			name:        pod,
+			expectedUID: expected,
+			retryDelay:  fastRetry,
+		}
+		return watcher.run(ctx)
+	}
+	return client
 }
 
 func TestNewKubeAdapter(t *testing.T) {
+	t.Parallel()
 	t.Run("kubeconfig 파일이 없으면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		missing := filepath.Join(t.TempDir(), "missing")
 
@@ -54,24 +75,23 @@ func TestNewKubeAdapter(t *testing.T) {
 	})
 
 	t.Run("경로가 비어 있고 홈 디렉터리를 알 수 없으면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		if os.Geteuid() == 0 {
-			t.Skip("requires a non-root process")
-		}
-		t.Setenv("HOME", "")
+		homeUnavailable := func() (string, error) { return "", errors.New("no home directory") }
 
 		// when
-		adapter, err := NewKubeAdapter("")
+		adapter, err := newKubeAdapter("", homeUnavailable)
 
 		// then
 		if err == nil || adapter != nil {
-			t.Fatalf("NewKubeAdapter() = %v, %v, want error", adapter, err)
+			t.Fatalf("newKubeAdapter() = %v, %v, want error", adapter, err)
 		}
 	})
 
 	t.Run("만들어진 어댑터가 컨텍스트와 네임스페이스와 서비스를 실제 클라이언트로 조회한다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		adapter, _, _ := newAPIAdapter(t)
+		adapter, _ := newAPIAdapter(t)
 		ctx := context.Background()
 
 		// when
@@ -97,10 +117,12 @@ func TestNewKubeAdapter(t *testing.T) {
 }
 
 func TestKubeAdapter_RealPortForward(t *testing.T) {
+	t.Parallel()
 	t.Run("서비스를 등록하면 로컬 포트가 파드로 이어지고 해제하면 포트가 풀린다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		adapter, _, api := newAPIAdapter(t)
-		local := firstFreePortFrom(t, minLocalPort)
+		adapter, api := newAPIAdapter(t)
+		local := freeLocalPort(t)
 
 		// when
 		tunnel, err := adapter.RegisterServicePortForward(context.Background(), "dev",
@@ -113,7 +135,7 @@ func TestKubeAdapter_RealPortForward(t *testing.T) {
 		if tunnel.Pod != "web-1" || tunnel.LocalPort != local || tunnel.RemotePort != 8080 || tunnel.DNSURL != "web.app" {
 			t.Fatalf("tunnel = %+v, want web.app on local %d to web-1:8080", tunnel, local)
 		}
-		if requests := api.requestsWith("/pods", "labelSelector="); len(requests) != 1 || !strings.Contains(requests[0], "labelSelector=app%3Dweb") {
+		if requests := api.RequestsWith("/pods", "labelSelector="); len(requests) != 1 || !strings.Contains(requests[0], "labelSelector=app%3Dweb") {
 			t.Fatalf("pod requests = %v, want one selector lookup for app=web", requests)
 		}
 		assertEcho(t, local)
@@ -121,13 +143,14 @@ func TestKubeAdapter_RealPortForward(t *testing.T) {
 		if err := adapter.UnregisterServicePortForward(tunnel.ForwardKey); err != nil {
 			t.Fatalf("UnregisterServicePortForward() error = %v", err)
 		}
-		waitUntil(t, func() bool { return isLocalPortFree(local) }, "local port to be released after unregister")
+		eventually(t, func() bool { return isLocalPortFree(local) }, "local port to be released after unregister")
 	})
 
 	t.Run("StartForward는 지정한 파드와 포트로 포워딩을 열고 StopAllPortForwards가 모두 닫는다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		adapter, _, _ := newAPIAdapter(t)
-		local := firstFreePortFrom(t, minLocalPort)
+		adapter, _ := newAPIAdapter(t)
+		local := freeLocalPort(t)
 
 		// when
 		key, err := adapter.StartForward(context.Background(), "dev", "app", "web-1", 8080, local)
@@ -137,40 +160,39 @@ func TestKubeAdapter_RealPortForward(t *testing.T) {
 		if err != nil || key != BuildPortForwardKey("dev", "app", "web-1", 8080, local) {
 			t.Fatalf("StartForward() = %q, %v", key, err)
 		}
-		waitUntil(t, func() bool { return isLocalPortFree(local) }, "local port to be released after stop all")
+		eventually(t, func() bool { return isLocalPortFree(local) }, "local port to be released after stop all")
 		if err := adapter.UnregisterServicePortForward(key); !errors.Is(err, ErrPortForwardNotFound) {
 			t.Fatalf("UnregisterServicePortForward() = %v, want ErrPortForwardNotFound", err)
 		}
 	})
 
 	t.Run("파드 연결이 끊기면 등록한 핸들러가 포워딩 키로 호출된다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		adapter, forwardServer, _ := newAPIAdapter(t)
+		adapter, server := newAPIAdapter(t)
 		lost := make(chan string, 1)
 		adapter.SetPortForwardLostHandler(func(key string, err error) { lost <- key })
-		local := firstFreePortFrom(t, minLocalPort)
+		local := freeLocalPort(t)
 		key, err := adapter.StartForward(context.Background(), "dev", "app", "web-1", 8080, local)
 		if err != nil {
 			t.Fatalf("StartForward() error = %v", err)
 		}
 
+		server.WaitForForwardConnections(t, 1)
+
 		// when
-		forwardServer.dropConnections()
+		server.DropForwardConnections()
 
 		// then
-		select {
-		case got := <-lost:
-			if got != key {
-				t.Fatalf("lost key = %q, want %q", got, key)
-			}
-		case <-time.After(testWait):
-			t.Fatal("lost handler was not called")
+		if got := receive(t, lost, "lost handler"); got != key {
+			t.Fatalf("lost key = %q, want %q", got, key)
 		}
 	})
 
 	t.Run("존재하지 않는 컨텍스트로 StartForward하면 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		adapter, _, _ := newAPIAdapter(t)
+		adapter, _ := newAPIAdapter(t)
 
 		// when
 		key, err := adapter.StartForward(context.Background(), "ghost", "app", "web-1", 8080, 40000)
@@ -183,10 +205,12 @@ func TestKubeAdapter_RealPortForward(t *testing.T) {
 }
 
 func TestRegisterServicePortForward_Failures(t *testing.T) {
+	t.Parallel()
 	services := &fakeServiceClient{byNamespace: map[string][]Service{"app": {httpService("web", "app", selectorApp)}}}
 	target := ServiceRef{Namespace: "app", Name: "web"}
 
 	t.Run("서비스 목록 조회가 실패하면 목록 오류로 감싼다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		cause := errors.New("api down")
 		failing := &fakeServiceClient{errs: map[string]error{"app": cause}}
@@ -202,6 +226,7 @@ func TestRegisterServicePortForward_Failures(t *testing.T) {
 	})
 
 	t.Run("클라이언트를 만들 수 없으면 포워딩을 시작하지 않고 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		forwards := &fakePortForwardClient{}
 		adapter := newTestAdapter(&fakePodClient{pods: []Pod{readyPod("web-1")}}, services, &fakeNamespaceClient{}, forwards)
@@ -217,6 +242,7 @@ func TestRegisterServicePortForward_Failures(t *testing.T) {
 	})
 
 	t.Run("파드 조회가 실패하면 서비스 이름을 담은 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		cause := errors.New("pods unavailable")
 		forwards := &fakePortForwardClient{}
@@ -232,6 +258,7 @@ func TestRegisterServicePortForward_Failures(t *testing.T) {
 	})
 
 	t.Run("사용할 수 있는 로컬 포트가 없으면 포워딩을 시작하지 않고 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		forwards := &fakePortForwardClient{}
 		adapter := newTestAdapter(&fakePodClient{pods: []Pod{readyPod("web-1")}}, services, &fakeNamespaceClient{}, forwards)
@@ -265,16 +292,4 @@ func assertEcho(t *testing.T, port int32) {
 	if _, err := conn.Read(buf); err != nil || string(buf) != "ping" {
 		t.Fatalf("echo = %q, %v, want ping", buf, err)
 	}
-}
-
-func waitUntil(t *testing.T, condition func() bool, what string) {
-	t.Helper()
-	deadline := time.Now().Add(testWait)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }

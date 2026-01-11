@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
@@ -14,7 +13,9 @@ import (
 )
 
 func TestEnterMovesFocus(t *testing.T) {
+	t.Parallel()
 	t.Run("Context에서 Enter를 누르면 커서 아래 컨텍스트를 활성화하고 Namespace로 간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.moveCursorTo(t, store.FocusContexts, "prod")
@@ -30,6 +31,7 @@ func TestEnterMovesFocus(t *testing.T) {
 	})
 
 	t.Run("Namespace에서 Enter를 누르면 네임스페이스를 활성화하고 Services로 간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.typeText("2")
@@ -50,6 +52,7 @@ func TestEnterMovesFocus(t *testing.T) {
 	})
 
 	t.Run("컨텍스트를 바꾸면 Namespace와 Services 필터를 지운다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.typeText("3")
@@ -70,6 +73,7 @@ func TestEnterMovesFocus(t *testing.T) {
 	})
 
 	t.Run("Shift+Tab은 이전 창으로 가고 처음에서는 마지막 창으로 돈다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -81,6 +85,7 @@ func TestEnterMovesFocus(t *testing.T) {
 	})
 
 	t.Run("Tab은 마지막 창에서 처음 창으로 돈다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.typeText("4")
@@ -95,6 +100,7 @@ func TestEnterMovesFocus(t *testing.T) {
 }
 
 func TestStartupSelection(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		current    string
@@ -107,6 +113,7 @@ func TestStartupSelection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			fake := &fakeKube{current: tc.current, currentErr: tc.currentErr, resources: sampleCluster()}
 			running := startTestApp(t, withKube(fake))
@@ -127,6 +134,7 @@ func TestStartupSelection(t *testing.T) {
 	}
 
 	t.Run("발견 실패는 요약 아래 컨텍스트별 줄을 단 경고 하나로 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t, withKube(&fakeKube{current: "dev", resources: sampleCluster()}))
 
@@ -150,6 +158,7 @@ func TestStartupSelection(t *testing.T) {
 	})
 
 	t.Run("컨텍스트 목록을 읽지 못하면 오류를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t, withKube(&fakeKube{listErr: errors.New("bad kubeconfig")}))
 
@@ -173,7 +182,9 @@ func (r *runningApp) navigateAround() {
 }
 
 func TestStatusPersistence(t *testing.T) {
+	t.Parallel()
 	t.Run("경고는 탐색을 해도 상태 줄에 남는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		manager := &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}}
 		running := startLoadedApp(t, withManager(manager))
@@ -192,28 +203,30 @@ func TestStatusPersistence(t *testing.T) {
 	})
 
 	t.Run("오래된 만료 타이머는 더 새로운 오류를 지우지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		ttl := 60 * time.Millisecond
 		manager := &fakeManager{registerErr: errors.New("no ready pod")}
-		running := startLoadedApp(t, withManager(manager), withStore(store.WithStatusTTL(ttl)))
+		running := startLoadedApp(t, withManager(manager), withStore(store.WithStatusTTL(0)))
 		running.typeText("3")
 		running.waitFocus(t, store.FocusServices)
 		running.moveCursorTo(t, store.FocusServices, serviceKey("api", "web"))
 		running.press(tcell.KeyF4)
 		running.waitStatus(t, "Theme: Light")
+		themeEvent := running.app.store.GetState().Status.ID
+		running.press(tcell.KeyEnter)
+		running.waitStatus(t, "Registering web.api failed: no ready pod")
 
 		// when
-		running.press(tcell.KeyEnter)
+		running.app.store.ExpireStatus(themeEvent)
 
 		// then
-		running.waitStatus(t, "Registering web.api failed: no ready pod")
-		time.Sleep(4 * ttl)
 		if got := running.app.store.GetState().Status; got.Level != store.LevelError || got.Text != "Registering web.api failed: no ready pod" {
 			t.Fatalf("status = %+v, want the error", got)
 		}
 	})
 
 	t.Run("표에서 Esc를 누르면 필터가 없을 때 상태 줄을 비운다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -237,6 +250,7 @@ func (r *runningApp) resize(t *testing.T, width, height int) {
 }
 
 func TestCompactLayout(t *testing.T) {
+	t.Parallel()
 	prepare := func(t *testing.T) *runningApp {
 		running := startLoadedApp(t)
 		running.typeText("3")
@@ -247,6 +261,7 @@ func TestCompactLayout(t *testing.T) {
 	}
 
 	t.Run("80열보다 좁아지면 포커스된 창만 보이고 필터와 커서를 유지한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := prepare(t)
 
@@ -265,6 +280,7 @@ func TestCompactLayout(t *testing.T) {
 	})
 
 	t.Run("다시 넓어지면 일반 배치로 돌아오고 필터와 커서를 유지한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := prepare(t)
 		running.resize(t, 70, 20)
@@ -280,6 +296,7 @@ func TestCompactLayout(t *testing.T) {
 	})
 
 	t.Run("좁은 배치에서 숫자 키는 보이는 창을 바꾼다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := prepare(t)
 		running.resize(t, 70, 15)
@@ -318,6 +335,7 @@ func bodyItems(a *App) []tview.Primitive {
 }
 
 func TestModalsKeepEventLoopAlive(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		page string
@@ -331,6 +349,7 @@ func TestModalsKeepEventLoopAlive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+" 창을 열고 Esc로 닫으면 포커스가 돌아오고 이벤트 루프가 응답한다", func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := startLoadedApp(t)
 			tc.open(running)
@@ -353,6 +372,7 @@ func TestModalsKeepEventLoopAlive(t *testing.T) {
 	}
 
 	t.Run("모달이 열려 있으면 표 단축키가 동작하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.typeText("?")
@@ -362,7 +382,7 @@ func TestModalsKeepEventLoopAlive(t *testing.T) {
 		running.typeText("4")
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if focus := running.app.store.GetState().Focus; focus != store.FocusContexts {
 			t.Fatalf("focus = %q, want contexts", focus)
 		}
@@ -372,6 +392,7 @@ func TestModalsKeepEventLoopAlive(t *testing.T) {
 	})
 
 	t.Run("F2로 기록을 열면 읽지 않은 수가 0이 된다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		if running.app.store.GetState().Unread == 0 {

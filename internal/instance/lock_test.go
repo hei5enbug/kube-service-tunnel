@@ -10,14 +10,18 @@ import (
 )
 
 func TestAcquire(t *testing.T) {
+	t.Parallel()
+
 	t.Run("같은 경로를 두 번째로 획득하면 ErrAlreadyRunning을 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "app.lock")
 		first, err := Acquire(path)
 		if err != nil {
 			t.Fatalf("first acquire: %v", err)
 		}
-		defer first.Release()
+		t.Cleanup(func() { releaseOrFail(t, first) })
 
 		// when
 		second, err := Acquire(path)
@@ -32,6 +36,8 @@ func TestAcquire(t *testing.T) {
 	})
 
 	t.Run("Release 후에는 다시 획득할 수 있다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "app.lock")
 		first, err := Acquire(path)
@@ -49,10 +55,12 @@ func TestAcquire(t *testing.T) {
 		if err != nil {
 			t.Fatalf("second acquire: %v", err)
 		}
-		defer second.Release()
+		t.Cleanup(func() { releaseOrFail(t, second) })
 	})
 
 	t.Run("Release를 두 번 호출해도 같은 결과를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "app.lock")
 		lock, err := Acquire(path)
@@ -71,6 +79,8 @@ func TestAcquire(t *testing.T) {
 	})
 
 	t.Run("락 파일 경로가 심볼릭 링크면 따라가지 않고 실패한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		dir := t.TempDir()
 		target := filepath.Join(dir, "target")
@@ -96,6 +106,8 @@ func TestAcquire(t *testing.T) {
 	})
 
 	t.Run("디렉터리가 없으면 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "missing", "app.lock")
 
@@ -111,16 +123,18 @@ func TestAcquire(t *testing.T) {
 }
 
 func TestAcquireLockFailure(t *testing.T) {
+	t.Parallel()
+
 	t.Run("락 시스템 호출이 EWOULDBLOCK이 아닌 오류로 실패하면 ErrAlreadyRunning 없이 감싼 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		cause := syscall.EIO
-		original := flock
-		flock = func(int, int) error { return cause }
-		t.Cleanup(func() { flock = original })
+		failingFlock := func(int, int) error { return cause }
 		path := filepath.Join(t.TempDir(), "app.lock")
 
 		// when
-		lock, err := Acquire(path)
+		lock, err := acquireWith(path, failingFlock)
 
 		// then
 		if lock != nil {
@@ -135,6 +149,8 @@ func TestAcquireLockFailure(t *testing.T) {
 	})
 
 	t.Run("락 파일 경로가 디렉터리면 열기 오류를 경로와 함께 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := t.TempDir()
 
@@ -152,7 +168,11 @@ func TestAcquireLockFailure(t *testing.T) {
 }
 
 func TestRelease(t *testing.T) {
+	t.Parallel()
+
 	t.Run("이미 닫힌 파일이면 감싼 오류를 반환하고 다시 호출해도 같은 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "app.lock")
 		lock, err := Acquire(path)
@@ -177,6 +197,8 @@ func TestRelease(t *testing.T) {
 	})
 
 	t.Run("파일이 없는 락은 패닉 없이 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		lock := &Lock{}
 
@@ -188,4 +210,11 @@ func TestRelease(t *testing.T) {
 			t.Fatal("expected error for lock without file")
 		}
 	})
+}
+
+func releaseOrFail(t *testing.T, lock *Lock) {
+	t.Helper()
+	if err := lock.Release(); err != nil {
+		t.Errorf("release lock: %v", err)
+	}
 }

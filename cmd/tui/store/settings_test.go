@@ -6,10 +6,12 @@ import (
 )
 
 func TestSetTunnelSetting(t *testing.T) {
+	t.Parallel()
 	web := SettingKey("dev", "api", "web")
 	admin := SettingKey("dev", "api", "admin")
 
 	t.Run("설정은 새 맵에 기억하고 이전 상태의 맵은 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetTunnelSetting(web, TunnelSetting{Hostname: "api.local"})
@@ -29,6 +31,7 @@ func TestSetTunnelSetting(t *testing.T) {
 	})
 
 	t.Run("빈 설정은 키를 지우고 이전 상태의 맵은 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetTunnelSetting(web, TunnelSetting{Hostname: "api.local", LocalPort: 8080})
@@ -47,6 +50,7 @@ func TestSetTunnelSetting(t *testing.T) {
 	})
 
 	t.Run("같은 설정을 다시 넣으면 상태를 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetTunnelSetting(web, TunnelSetting{LocalPort: 8080})
@@ -62,6 +66,7 @@ func TestSetTunnelSetting(t *testing.T) {
 	})
 
 	t.Run("없는 키를 빈 설정으로 지우면 상태를 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -75,6 +80,7 @@ func TestSetTunnelSetting(t *testing.T) {
 	})
 
 	t.Run("SettingKey는 컨텍스트 이름에 /가 있어도 다른 서비스와 키가 겹치지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		first, second := []string{"cluster/dev", "api", "web"}, []string{"cluster", "dev/api", "web"}
 

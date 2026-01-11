@@ -25,12 +25,16 @@ type contextClient struct {
 }
 
 func NewContextClient(kubeconfigPath string) (*contextClient, error) {
+	return newContextClient(kubeconfigPath, DefaultKubeconfigPath)
+}
+
+func newContextClient(kubeconfigPath string, defaultPath defaultPathFunc) (*contextClient, error) {
 	if kubeconfigPath == "" {
-		defaultPath, err := DefaultKubeconfigPath()
+		resolved, err := defaultPath()
 		if err != nil {
 			return nil, err
 		}
-		kubeconfigPath = defaultPath
+		kubeconfigPath = resolved
 	}
 
 	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {

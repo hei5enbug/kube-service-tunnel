@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,9 +12,11 @@ import (
 const waitTimeout = 5 * time.Second
 
 func TestSetterDoesNotBlockOnListener(t *testing.T) {
+	t.Parallel()
 	t.Run("리스너가 막혀 있어도 세터는 즉시 반환한다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		s := NewStore()
+		s := NewStore(WithStatusTTL(0))
 		release := make(chan struct{})
 		entered := make(chan struct{}, 1)
 		s.Subscribe(func(State) {
@@ -45,6 +48,7 @@ func TestSetterDoesNotBlockOnListener(t *testing.T) {
 	})
 
 	t.Run("리스너 안에서 세터를 호출해도 교착하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		done := make(chan struct{})
@@ -69,9 +73,11 @@ func TestSetterDoesNotBlockOnListener(t *testing.T) {
 }
 
 func TestListenerOrdering(t *testing.T) {
+	t.Parallel()
 	t.Run("리스너는 커밋된 순서대로 상태를 받는다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		s := NewStore()
+		s := NewStore(WithStatusTTL(0))
 		const total = 200
 		var mu sync.Mutex
 		var seen []string
@@ -110,8 +116,9 @@ func TestListenerOrdering(t *testing.T) {
 	})
 
 	t.Run("리스너는 동시에 실행되지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		s := NewStore()
+		s := NewStore(WithStatusTTL(0))
 		const writers, perWriter = 8, 50
 		var running, maxRunning, calls int32
 		done := make(chan struct{})
@@ -123,7 +130,7 @@ func TestListenerOrdering(t *testing.T) {
 					break
 				}
 			}
-			time.Sleep(50 * time.Microsecond)
+			runtime.Gosched()
 			atomic.AddInt32(&running, -1)
 			if atomic.AddInt32(&calls, 1) == writers*perWriter {
 				close(done)
@@ -156,7 +163,9 @@ func TestListenerOrdering(t *testing.T) {
 }
 
 func TestTryBeginLoading(t *testing.T) {
+	t.Parallel()
 	t.Run("로딩 중이 아니면 로딩을 시작하고 true를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -170,6 +179,7 @@ func TestTryBeginLoading(t *testing.T) {
 	})
 
 	t.Run("이미 로딩 중이면 false를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.TryBeginLoading("loading")
@@ -184,6 +194,7 @@ func TestTryBeginLoading(t *testing.T) {
 	})
 
 	t.Run("동시에 호출해도 정확히 한 번만 성공한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		var winners int32
@@ -208,6 +219,7 @@ func TestTryBeginLoading(t *testing.T) {
 	})
 
 	t.Run("로딩을 끝낸 뒤에는 다시 시작할 수 있다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.TryBeginLoading("loading")

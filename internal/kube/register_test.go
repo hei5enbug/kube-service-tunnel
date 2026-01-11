@@ -27,7 +27,9 @@ func refs(pairs ...string) []ServiceRef {
 }
 
 func TestRegisterServicesForContext(t *testing.T) {
+	t.Parallel()
 	t.Run("대상을 주어진 순서대로 처리하고 진행 상황을 정확한 순서로 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{byNamespace: map[string][]Service{
 			"app":   {httpService("web", "app", selectorApp), httpService("api", "app", selectorApp)},
@@ -69,6 +71,7 @@ func TestRegisterServicesForContext(t *testing.T) {
 	})
 
 	t.Run("대상이 분류별로 나뉘고 이미 등록된 호스트명은 소유 컨텍스트와 함께 건너뛴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{byNamespace: map[string][]Service{
 			"app": {
@@ -102,6 +105,7 @@ func TestRegisterServicesForContext(t *testing.T) {
 	})
 
 	t.Run("같은 서비스가 두 번 들어오면 두 번째는 건너뛴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{byNamespace: map[string][]Service{"app": {httpService("web", "app", selectorApp)}}}
 		forwards := &fakePortForwardClient{}
@@ -118,6 +122,7 @@ func TestRegisterServicesForContext(t *testing.T) {
 	})
 
 	t.Run("네임스페이스 조회에 실패하면 그 네임스페이스의 모든 대상이 실패로 기록되고 다른 네임스페이스는 계속 처리한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{
 			byNamespace: map[string][]Service{"app": {httpService("web", "app", selectorApp)}},
@@ -137,6 +142,7 @@ func TestRegisterServicesForContext(t *testing.T) {
 	})
 
 	t.Run("컨텍스트가 취소되면 지금까지의 결과와 취소 오류를 돌려주고 멈춘다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -164,6 +170,7 @@ func TestRegisterServicesForContext(t *testing.T) {
 	})
 
 	t.Run("대상이 비어 있으면 적합한 서비스가 없다는 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := newTestAdapter(&fakePodClient{}, &fakeServiceClient{}, &fakeNamespaceClient{}, &fakePortForwardClient{})
 		called := false
@@ -179,6 +186,7 @@ func TestRegisterServicesForContext(t *testing.T) {
 	})
 
 	t.Run("포워딩 시작이 실패한 서비스는 실패로 기록하고 로컬 포트를 점유 처리하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{byNamespace: map[string][]Service{"app": {httpService("web", "app", selectorApp)}}}
 		forwards := &fakePortForwardClient{startFn: func(string) error { return errors.New("dial failed") }}
@@ -196,6 +204,7 @@ func TestRegisterServicesForContext(t *testing.T) {
 	})
 
 	t.Run("클라이언트를 만들지 못하면 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := newTestAdapter(&fakePodClient{}, &fakeServiceClient{}, &fakeNamespaceClient{}, &fakePortForwardClient{})
 		adapter.newClient = func(string) (*rest.Config, kubernetes.Interface, error) { return nil, nil, errors.New("no kubeconfig") }
@@ -227,7 +236,9 @@ func assertFailures(t *testing.T, got []ServiceRegistrationFailure, want map[str
 }
 
 func TestRegisterServicePortForward(t *testing.T) {
+	t.Parallel()
 	t.Run("지원하는 HTTP 포트가 없으면 지원 포트 목록을 담아 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{byNamespace: map[string][]Service{
 			"app": {httpService("db", "app", selectorApp, ServicePort{Port: 5432, Protocol: "TCP"})},
@@ -244,6 +255,7 @@ func TestRegisterServicePortForward(t *testing.T) {
 	})
 
 	t.Run("셀렉터가 없는 서비스는 파드를 찾지 않고 셀렉터 없음 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{byNamespace: map[string][]Service{"app": {httpService("ext", "app", nil)}}}
 		pods := &fakePodClient{}
@@ -259,6 +271,7 @@ func TestRegisterServicePortForward(t *testing.T) {
 	})
 
 	t.Run("서비스가 최신 목록에 없으면 찾을 수 없다는 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := newTestAdapter(&fakePodClient{}, &fakeServiceClient{}, &fakeNamespaceClient{}, &fakePortForwardClient{})
 
@@ -272,6 +285,7 @@ func TestRegisterServicePortForward(t *testing.T) {
 	})
 
 	t.Run("8080 포트 서비스도 svc.ns 호스트명의 터널을 만든다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		services := &fakeServiceClient{byNamespace: map[string][]Service{
 			"app": {httpService("api", "app", selectorApp, ServicePort{Port: 8080, TargetPortName: "http", Protocol: "TCP"})},
@@ -290,7 +304,9 @@ func TestRegisterServicePortForward(t *testing.T) {
 }
 
 func TestUnregisterServicePortForward(t *testing.T) {
+	t.Parallel()
 	t.Run("없는 키를 해제하면 ErrPortForwardNotFound를 그대로 전달한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		adapter := newTestAdapter(&fakePodClient{}, &fakeServiceClient{}, &fakeNamespaceClient{}, &fakePortForwardClient{})
 

@@ -31,7 +31,9 @@ func (r *runningApp) drawnStyle(t *testing.T, x, y int) tcell.Style {
 }
 
 func TestRegisterService(t *testing.T) {
+	t.Parallel()
 	t.Run("Enter는 커서 아래 서비스를 등록하고 표시를 갱신한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := servicesApp(t)
 		running.moveCursorTo(t, store.FocusServices, serviceKey("api", "web"))
@@ -65,6 +67,7 @@ func TestRegisterService(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := servicesApp(t, withManager(&fakeManager{tunnels: tc.tunnels}))
 			running.moveCursorTo(t, store.FocusServices, tc.key)
@@ -82,7 +85,9 @@ func TestRegisterService(t *testing.T) {
 }
 
 func TestRefreshActiveContext(t *testing.T) {
+	t.Parallel()
 	t.Run("r은 활성 컨텍스트만 새로 고치고 선택과 커서와 필터를 유지한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		refreshed := sampleCluster()["dev"]
 		refreshed.Namespaces = map[string][]kube.Service{
@@ -102,10 +107,11 @@ func TestRefreshActiveContext(t *testing.T) {
 		// then
 		running.waitStatus(t, "Refreshed dev · 2 namespaces")
 		running.waitIdle(t)
-		keys := uiValue(t, running, func() []string { return running.app.pane(store.FocusServices).keys })
-		if !slices.Equal(keys, []string{serviceKey("api", "web"), serviceKey("api", "website"), serviceKey("api", "webhooks")}) {
-			t.Fatalf("service keys = %v", keys)
+		wantKeys := []string{serviceKey("api", "web"), serviceKey("api", "website"), serviceKey("api", "webhooks")}
+		serviceKeys := func() []string {
+			return uiValue(t, running, func() []string { return running.app.pane(store.FocusServices).keys })
 		}
+		eventually(t, "refreshed services", func() bool { return slices.Equal(serviceKeys(), wantKeys) })
 		if got := running.cursorKey(t, store.FocusServices); got != serviceKey("api", "website") {
 			t.Fatalf("cursor = %q", got)
 		}
@@ -113,6 +119,7 @@ func TestRefreshActiveContext(t *testing.T) {
 	})
 
 	t.Run("새로 고침에 오류가 있으면 경고하고 Namespace 빈 상태가 실패를 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		failed := kube.ContextResources{Namespaces: map[string][]kube.Service{}, Err: errors.New("context dev: unauthorized")}
 		fake := &fakeKube{current: "dev", resources: sampleCluster(), refreshed: map[string]kube.ContextResources{"dev": failed}}
@@ -130,7 +137,9 @@ func TestRefreshActiveContext(t *testing.T) {
 }
 
 func TestThemeCycle(t *testing.T) {
+	t.Parallel()
 	t.Run("F4는 Dark 다음 Light로 바꾸고 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -145,6 +154,7 @@ func TestThemeCycle(t *testing.T) {
 	})
 
 	t.Run("Mono 테마는 선택한 행을 반전으로 그린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.press(tcell.KeyF4)
@@ -162,6 +172,7 @@ func TestThemeCycle(t *testing.T) {
 	})
 
 	t.Run("Mono 다음 F4는 다시 Dark로 돌아간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.press(tcell.KeyF4)
@@ -177,6 +188,7 @@ func TestThemeCycle(t *testing.T) {
 }
 
 func TestDetails(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		pane  string
@@ -196,6 +208,7 @@ func TestDetails(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := startLoadedApp(t, withManager(&fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}}))
 			running.typeText(tc.pane)
@@ -221,6 +234,7 @@ func TestDetails(t *testing.T) {
 	}
 
 	t.Run("행이 없으면 상세 대신 안내를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, nil)
 

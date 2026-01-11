@@ -2,7 +2,6 @@ package tui
 
 import (
 	"testing"
-	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
@@ -16,7 +15,9 @@ func (r *runningApp) consumed(t *testing.T, area store.FocusArea, event *tcell.E
 }
 
 func TestTableKeyPassThrough(t *testing.T) {
+	t.Parallel()
 	t.Run("쓰지 않는 문자 키와 특수 키는 표로 그대로 넘긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -31,6 +32,7 @@ func TestTableKeyPassThrough(t *testing.T) {
 	})
 
 	t.Run("쓰는 키는 표로 넘기지 않고 소비한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -55,6 +57,7 @@ func TestTableKeyPassThrough(t *testing.T) {
 	}
 	for _, tc := range foreignKeys {
 		t.Run(tc.name+" 키는 터널 전용이라 다른 창에서 소비되지 않고 아무 일도 하지 않는다", func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := startLoadedApp(t, withManager(&fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}}))
 			before := running.app.store.GetState().Status.ID
@@ -63,7 +66,7 @@ func TestTableKeyPassThrough(t *testing.T) {
 			consumed := running.consumed(t, store.FocusContexts, tc.key)
 
 			// then
-			time.Sleep(settleDelay)
+			running.settle(t)
 			if consumed || len(running.manager.unregistered()) != 0 || len(running.copier.copied()) != 0 {
 				t.Fatalf("consumed = %v, unregistered = %v, copied = %v", consumed, running.manager.unregistered(), running.copier.copied())
 			}
@@ -74,6 +77,7 @@ func TestTableKeyPassThrough(t *testing.T) {
 	}
 
 	t.Run("Ctrl+P는 Contexts 창 밖에서 소비되지 않고 확인 창도 열지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -88,7 +92,9 @@ func TestTableKeyPassThrough(t *testing.T) {
 }
 
 func TestBulkWithoutContext(t *testing.T) {
+	t.Parallel()
 	t.Run("컨텍스트가 없으면 Ctrl+P는 확인 창 대신 안내를 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 
@@ -104,7 +110,9 @@ func TestBulkWithoutContext(t *testing.T) {
 }
 
 func TestFilterEdgeCases(t *testing.T) {
+	t.Parallel()
 	t.Run("필터가 열려 있지 않으면 입력 변경을 무시한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 
@@ -120,6 +128,7 @@ func TestFilterEdgeCases(t *testing.T) {
 	})
 
 	t.Run("같은 문자열이면 행을 다시 그리지 않고 다른 문자열이면 다시 그린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.typeText("3")
@@ -152,6 +161,7 @@ func TestFilterEdgeCases(t *testing.T) {
 	})
 
 	t.Run("필터가 열려 있지 않을 때 입력 종료 신호는 포커스를 옮기지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.typeText("3")
@@ -176,6 +186,7 @@ func TestFilterEdgeCases(t *testing.T) {
 	}
 	for _, tc := range tabCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := startLoadedApp(t)
 			running.typeText("3")
@@ -198,7 +209,9 @@ func TestFilterEdgeCases(t *testing.T) {
 }
 
 func TestEscapePane(t *testing.T) {
+	t.Parallel()
 	t.Run("필터가 없을 때 Esc는 남아 있는 경고를 상태 줄에서 지우고 기록은 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		if running.app.store.GetState().Status.ID == 0 {
@@ -216,6 +229,7 @@ func TestEscapePane(t *testing.T) {
 	})
 
 	t.Run("필터가 있을 때 Esc는 필터만 지우고 상태 줄은 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "admin"), tunnel("dev", "api", "web")})
 		running.applyFilter(t, store.FocusTunnels, "web")

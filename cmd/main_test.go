@@ -37,7 +37,7 @@ func newRunFixture(t *testing.T) *runFixture {
 		name:      "kube-service-tunnel",
 		hostsPath: f.hostsPath,
 		lockPath:  f.lockPath,
-		acquire:   instance.Acquire,
+		acquire:   acquireInstanceLock,
 		runTUI: func(kubeconfigPath string) error {
 			f.tuiCalls = append(f.tuiCalls, kubeconfigPath)
 			f.events = append(f.events, "runTUI")
@@ -49,7 +49,11 @@ func newRunFixture(t *testing.T) *runFixture {
 }
 
 func TestRun(t *testing.T) {
+	t.Parallel()
+
 	t.Run("hosts 파일에 쓸 수 없으면 기존 안내 메시지와 함께 1을 반환하고 TUI를 실행하지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
 		f.deps.hostsPath = filepath.Join(t.TempDir(), "missing-hosts")
@@ -74,13 +78,15 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("다른 인스턴스가 실행 중이면 기존 메시지와 함께 1을 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
 		held, err := instance.Acquire(f.lockPath)
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
-		defer held.Release()
+		t.Cleanup(func() { releaseOrFail(t, held) })
 		var stderr bytes.Buffer
 
 		// when
@@ -99,9 +105,11 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("락 획득이 그 밖의 이유로 실패하면 오류를 출력하고 1을 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
-		f.deps.acquire = func(string) (*instance.Lock, error) { return nil, errors.New("lock exploded") }
+		f.deps.acquire = func(string) (releaser, error) { return nil, errors.New("lock exploded") }
 		var stderr bytes.Buffer
 
 		// when
@@ -119,7 +127,32 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("종료할 때 락 해제에 실패하면 경고를 출력하고 종료 코드는 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
+		// given
+		f := newRunFixture(t)
+		f.deps.acquire = func(string) (releaser, error) { return failingRelease{}, nil }
+		var stderr bytes.Buffer
+
+		// when
+		code := run(nil, &stderr, f.deps)
+
+		// then
+		if code != 0 {
+			t.Fatalf("code = %d, want 0", code)
+		}
+		if want := "Warning: release lock: close failed\n"; stderr.String() != want {
+			t.Fatalf("stderr = %q, want %q", stderr.String(), want)
+		}
+		if len(f.tuiCalls) != 1 {
+			t.Fatalf("TUI calls = %v, want one", f.tuiCalls)
+		}
+	})
+
 	t.Run("TUI가 오류를 반환하면 Error 접두사와 함께 출력하고 락을 해제한 뒤 1을 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		tests := []struct {
 			name    string
 			tuiErr  error
@@ -130,6 +163,8 @@ func TestRun(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
 				// given
 				f := newRunFixture(t)
 				f.deps.runTUI = func(string) error { return tt.tuiErr }
@@ -151,6 +186,8 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("성공하면 0을 반환하고 TUI가 실행되는 동안 락을 잡고 이후에 해제한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
 		var heldDuringTUI bool
@@ -181,6 +218,8 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("TUI를 실행하기 직전에 kube 로그를 끈다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
 
@@ -194,6 +233,8 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("사전 검사에 실패하면 kube 로그를 끄지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
 		f.deps.hostsPath = filepath.Join(t.TempDir(), "missing-hosts")
@@ -208,6 +249,8 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("kubeconfig 플래그 값을 TUI에 그대로 넘기고 없으면 빈 문자열을 넘긴다", func(t *testing.T) {
+		t.Parallel()
+
 		tests := []struct {
 			name string
 			args []string
@@ -219,6 +262,8 @@ func TestRun(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
 				// given
 				f := newRunFixture(t)
 
@@ -237,6 +282,8 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("알 수 없는 플래그면 사용법을 출력하고 2를 반환하며 아무것도 실행하지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
 		var stderr bytes.Buffer
@@ -257,6 +304,8 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("-h 플래그면 사용법을 출력하고 0을 반환하며 아무것도 실행하지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		f := newRunFixture(t)
 		var stderr bytes.Buffer
@@ -278,7 +327,11 @@ func TestRun(t *testing.T) {
 }
 
 func TestCheckHostsFilePermission(t *testing.T) {
+	t.Parallel()
+
 	t.Run("쓰기 가능한 파일이면 nil을 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "hosts")
 		if err := os.WriteFile(path, nil, 0o644); err != nil {
@@ -295,6 +348,8 @@ func TestCheckHostsFilePermission(t *testing.T) {
 	})
 
 	t.Run("파일이 없으면 경로와 sudo 안내가 담긴 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "missing")
 
@@ -309,7 +364,11 @@ func TestCheckHostsFilePermission(t *testing.T) {
 }
 
 func TestDefaultDeps(t *testing.T) {
+	t.Parallel()
+
 	t.Run("기본 의존성은 /etc/hosts와 기본 락 경로를 가리킨다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		// when
 		deps := defaultDeps()
@@ -321,6 +380,8 @@ func TestDefaultDeps(t *testing.T) {
 	})
 }
 
+// TestSilenceKubeLogs stays serial on purpose: it swaps the process-wide os.Stderr and klog
+// global state, so it must not overlap with any parallel test in this package.
 func TestSilenceKubeLogs(t *testing.T) {
 	t.Run("끄기 전에는 klog 오류가 프로세스 stderr에 쓰이고 끈 뒤에는 아무것도 쓰이지 않는다", func(t *testing.T) {
 		// given
@@ -380,4 +441,15 @@ func assertLockReleased(t *testing.T, path string) {
 		t.Fatalf("lock still held: %v", err)
 	}
 	_ = lock.Release()
+}
+
+type failingRelease struct{}
+
+func (failingRelease) Release() error { return errors.New("release lock: close failed") }
+
+func releaseOrFail(t *testing.T, lock releaser) {
+	t.Helper()
+	if err := lock.Release(); err != nil {
+		t.Errorf("release lock: %v", err)
+	}
 }

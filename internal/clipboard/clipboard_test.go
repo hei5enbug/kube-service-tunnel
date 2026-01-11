@@ -14,6 +14,8 @@ func env(values map[string]string) func(string) string {
 }
 
 func TestPasteboardCommand(t *testing.T) {
+	t.Parallel()
+
 	plain := Command{Path: pbcopyPath}
 	cases := []struct {
 		name string
@@ -35,6 +37,8 @@ func TestPasteboardCommand(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			getenv := env(tc.env)
 
@@ -70,7 +74,11 @@ func recordingSystem(goos string, result error, record *recordedRun) *System {
 }
 
 func TestSystemCopy(t *testing.T) {
+	t.Parallel()
+
 	t.Run("macOS에서는 텍스트를 표준 입력으로 넘기고 3초 제한을 건다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		var record recordedRun
 		system := recordingSystem(darwinGOOS, nil, &record)
@@ -92,6 +100,8 @@ func TestSystemCopy(t *testing.T) {
 	})
 
 	t.Run("명령이 실패하면 그 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		var record recordedRun
 		failure := errors.New("no session")
@@ -107,6 +117,8 @@ func TestSystemCopy(t *testing.T) {
 	})
 
 	t.Run("macOS가 아니면 명령을 실행하지 않고 ErrUnsupported를 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		var record recordedRun
 		system := recordingSystem("linux", nil, &record)
@@ -121,6 +133,8 @@ func TestSystemCopy(t *testing.T) {
 	})
 
 	t.Run("NewSystem은 현재 플랫폼과 3초 제한으로 만든다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		want := CopyTimeout
 
@@ -135,7 +149,11 @@ func TestSystemCopy(t *testing.T) {
 }
 
 func TestRunCommand(t *testing.T) {
+	t.Parallel()
+
 	t.Run("셸 없이 실행하고 표준 입력을 넘긴다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, err := exec.LookPath("cat")
 		if err != nil {
@@ -152,6 +170,8 @@ func TestRunCommand(t *testing.T) {
 	})
 
 	t.Run("실패한 명령은 경로를 담은 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, err := exec.LookPath("false")
 		if err != nil {
@@ -169,6 +189,8 @@ func TestRunCommand(t *testing.T) {
 	})
 
 	t.Run("출력이 있는 실패는 출력을 오류에 덧붙인다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path, err := exec.LookPath("ls")
 		if err != nil {

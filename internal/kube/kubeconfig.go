@@ -15,8 +15,15 @@ const sudoUserEnv = "SUDO_USER"
 
 type userLookupFunc func(username string) (*user.User, error)
 
+// defaultPathFunc locates the kubeconfig used when no path is given.
+type defaultPathFunc func() (string, error)
+
 func DefaultKubeconfigPath() (string, error) {
-	home, err := resolveHomeDir(os.Geteuid(), os.Getenv(sudoUserEnv), user.Lookup, os.UserHomeDir)
+	return kubeconfigPathFor(os.Geteuid(), os.Getenv(sudoUserEnv), user.Lookup, os.UserHomeDir)
+}
+
+func kubeconfigPathFor(euid int, sudoUser string, lookup userLookupFunc, fallback func() (string, error)) (string, error) {
+	home, err := resolveHomeDir(euid, sudoUser, lookup, fallback)
 	if err != nil {
 		return "", fmt.Errorf("get user home directory: %w", err)
 	}
@@ -37,12 +44,16 @@ func loadKubeconfig(kubeconfigPath string) (*rest.Config, error) {
 }
 
 func loadKubeconfigWithContext(kubeconfigPath, contextName string) (*rest.Config, error) {
+	return loadKubeconfigFrom(kubeconfigPath, contextName, DefaultKubeconfigPath)
+}
+
+func loadKubeconfigFrom(kubeconfigPath, contextName string, defaultPath defaultPathFunc) (*rest.Config, error) {
 	if kubeconfigPath == "" {
-		defaultPath, err := DefaultKubeconfigPath()
+		resolved, err := defaultPath()
 		if err != nil {
 			return nil, err
 		}
-		kubeconfigPath = defaultPath
+		kubeconfigPath = resolved
 	}
 
 	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {

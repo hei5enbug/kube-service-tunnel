@@ -6,11 +6,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestNewPortForwardClient(t *testing.T) {
+	t.Parallel()
 	t.Run("처음에는 포워딩이 없어 없는 키를 중지하면 ErrPortForwardNotFound를 낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		client := NewPortForwardClient()
 
@@ -26,7 +27,9 @@ func TestNewPortForwardClient(t *testing.T) {
 }
 
 func TestStartPortForward_DuplicateKey(t *testing.T) {
+	t.Parallel()
 	t.Run("같은 키가 이미 있으면 새 포워딩을 시작하지 않고 기존 항목을 유지한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		var started atomic.Int32
 		runner := func(request forwardRequest, stopCh <-chan struct{}, readyCh chan struct{}) error {
@@ -36,7 +39,7 @@ func TestStartPortForward_DuplicateKey(t *testing.T) {
 			return nil
 		}
 		client := newPortForwardClient(runner, testWait)
-		defer client.StopAllPortForwards()
+		t.Cleanup(client.StopAllPortForwards)
 		startTestForward(t, client, 40000)
 
 		// when
@@ -50,7 +53,9 @@ func TestStartPortForward_DuplicateKey(t *testing.T) {
 }
 
 func TestWatchForward_WithoutHandler(t *testing.T) {
+	t.Parallel()
 	t.Run("핸들러가 없어도 예기치 않게 끝난 포워딩의 항목을 지운다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		exit := make(chan struct{})
 		client := newPortForwardClient(blockingReadyRunner(exit, errors.New("connection reset")), testWait)
@@ -60,12 +65,6 @@ func TestWatchForward_WithoutHandler(t *testing.T) {
 		close(exit)
 
 		// then
-		deadline := time.Now().Add(testWait)
-		for client.forwardCount() != 0 && time.Now().Before(deadline) {
-			time.Sleep(5 * time.Millisecond)
-		}
-		if client.forwardCount() != 0 {
-			t.Fatalf("count = %d, want 0", client.forwardCount())
-		}
+		eventually(t, func() bool { return client.forwardCount() == 0 }, "forward entry to be removed")
 	})
 }

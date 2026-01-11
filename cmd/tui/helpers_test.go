@@ -11,6 +11,7 @@ import (
 )
 
 func TestTruncate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		text  string
@@ -28,6 +29,7 @@ func TestTruncate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			text, width := tc.text, tc.width
 
@@ -45,6 +47,7 @@ func TestTruncate(t *testing.T) {
 	}
 
 	t.Run("fit은 자른 뒤 스타일 태그를 이스케이프한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		text := "[red]ctx"
 
@@ -59,6 +62,7 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestMatchFilter(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		query  string
@@ -73,6 +77,7 @@ func TestMatchFilter(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			query, fields := tc.query, tc.fields
 
@@ -87,6 +92,7 @@ func TestMatchFilter(t *testing.T) {
 	}
 
 	t.Run("filterRows는 입력 조각을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		rows := []string{"a", "b", "a"}
 
@@ -105,6 +111,7 @@ func registeredRow(tunnel dns.DNSTunnel) serviceRow {
 }
 
 func TestServiceMarker(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		row        serviceRow
@@ -121,6 +128,7 @@ func TestServiceMarker(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			row := tc.row
 
@@ -135,6 +143,7 @@ func TestServiceMarker(t *testing.T) {
 	}
 
 	t.Run("PORT는 Eligibility가 고른 서비스 포트이고 없으면 -이다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		state := store.State{SelectedContext: "dev", Services: []kube.Service{httpService("api", "web", 8080), grpcService("api", "grpc")}}
 
@@ -148,6 +157,7 @@ func TestServiceMarker(t *testing.T) {
 	})
 
 	t.Run("행은 기억한 설정을 대상에 담고 그 이름을 쓰는 다른 터널을 찾는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		settings := map[string]store.TunnelSetting{store.SettingKey("dev", "api", "web"): {Hostname: "shop.local", LocalPort: 8081}}
 		state := store.State{SelectedContext: "dev", Services: []kube.Service{httpService("api", "web", 8080)}, TunnelSettings: settings}
@@ -163,6 +173,7 @@ func TestServiceMarker(t *testing.T) {
 	})
 
 	t.Run("이름이 바뀐 자기 터널은 이름이 아니라 서비스로 찾는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		state := store.State{SelectedContext: "dev", Services: []kube.Service{httpService("api", "web", 8080)}}
 
@@ -177,6 +188,7 @@ func TestServiceMarker(t *testing.T) {
 }
 
 func TestStatusLine(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		event store.Event
@@ -196,6 +208,7 @@ func TestStatusLine(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			event, width := tc.event, tc.width
 

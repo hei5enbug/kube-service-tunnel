@@ -50,6 +50,17 @@ func WithStatusTTL(ttl time.Duration) Option {
 	}
 }
 
+// withScheduler replaces the timer that expires status events, which tests use to expire them on demand.
+func withScheduler(afterFunc func(time.Duration, func())) Option {
+	return func(store *Store) {
+		store.afterFunc = afterFunc
+	}
+}
+
+func runAfter(delay time.Duration, fn func()) {
+	time.AfterFunc(delay, fn)
+}
+
 type Store struct {
 	mutex       sync.RWMutex
 	state       State
@@ -57,6 +68,7 @@ type Store struct {
 	lastEventID uint64
 	statusTTL   time.Duration
 	now         func() time.Time
+	afterFunc   func(time.Duration, func())
 
 	queueMutex sync.Mutex
 	pending    []delivery
@@ -64,7 +76,7 @@ type Store struct {
 }
 
 func NewStore(options ...Option) *Store {
-	store := &Store{statusTTL: DefaultStatusTTL, now: time.Now}
+	store := &Store{statusTTL: DefaultStatusTTL, now: time.Now, afterFunc: runAfter}
 	for _, option := range options {
 		option(store)
 	}

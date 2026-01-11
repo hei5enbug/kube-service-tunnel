@@ -8,9 +8,12 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
+
+	"github.com/byoungmin/kube-service-tunnel/internal/kube/kubetest"
 )
 
 type runResult struct {
@@ -34,11 +37,17 @@ func startRunPortForward(request forwardRequest) (stopCh chan struct{}, readyCh 
 	return stopCh, readyCh, out
 }
 
+func webPod() map[string][]corev1.Pod {
+	return map[string][]corev1.Pod{"app": {kubetest.RunningPod("app", "web-1", nil, true)}}
+}
+
 func TestRunPortForward(t *testing.T) {
+	t.Parallel()
 	t.Run("API 서버가 업그레이드를 거부하면 포워딩 오류를 돌려주고 준비 신호는 보내지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{failures: map[string]int{"/api/v1/namespaces/app/pods/web-1/portforward": 403}})
-		request := newForwardRequest(t, &rest.Config{Host: api.URL()}, firstFreePortFrom(t, minLocalPort), 8080)
+		api := kubetest.NewServer(t, kubetest.Config{Failures: map[string]int{"/api/v1/namespaces/app/pods/web-1/portforward": 403}})
+		request := newForwardRequest(t, &rest.Config{Host: api.URL()}, freeLocalPort(t), 8080)
 		stopCh, readyCh, result := startRunPortForward(request)
 		defer close(stopCh)
 
@@ -59,15 +68,16 @@ func TestRunPortForward(t *testing.T) {
 			t.Fatal("ready signal was sent although the upgrade was rejected")
 		default:
 		}
-		if len(api.requestsTo("/portforward")) == 0 {
+		if len(api.RequestsTo("/portforward")) == 0 {
 			t.Fatal("port-forward endpoint was never requested")
 		}
 	})
 
 	t.Run("준비되면 로컬 포트로 들어온 데이터를 파드로 전달하고 중지하면 오류 없이 끝난다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		api := newFakeAPI(t, apiFixture{forward: newSPDYForwardServer(t)})
-		local := firstFreePortFrom(t, minLocalPort)
+		api := kubetest.NewServer(t, kubetest.Config{Pods: webPod()})
+		local := freeLocalPort(t)
 		stopCh, readyCh, result := startRunPortForward(newForwardRequest(t, &rest.Config{Host: api.URL()}, local, 8080))
 		select {
 		case <-readyCh:
@@ -102,10 +112,10 @@ func TestRunPortForward(t *testing.T) {
 	})
 
 	t.Run("준비된 뒤 파드 연결이 끊기면 연결 끊김 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		forwardServer := newSPDYForwardServer(t)
-		api := newFakeAPI(t, apiFixture{forward: forwardServer})
-		stopCh, readyCh, result := startRunPortForward(newForwardRequest(t, &rest.Config{Host: api.URL()}, firstFreePortFrom(t, minLocalPort), 8080))
+		api := kubetest.NewServer(t, kubetest.Config{Pods: webPod()})
+		stopCh, readyCh, result := startRunPortForward(newForwardRequest(t, &rest.Config{Host: api.URL()}, freeLocalPort(t), 8080))
 		defer close(stopCh)
 		select {
 		case <-readyCh:
@@ -113,8 +123,10 @@ func TestRunPortForward(t *testing.T) {
 			t.Fatal("port forward did not become ready")
 		}
 
+		api.WaitForForwardConnections(t, 1)
+
 		// when
-		forwardServer.dropConnections()
+		api.DropForwardConnections()
 
 		// then
 		select {
@@ -128,6 +140,7 @@ func TestRunPortForward(t *testing.T) {
 	})
 
 	t.Run("인증서 설정이 잘못되면 라운드트리퍼 생성 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		config := &rest.Config{Host: "https://127.0.0.1:1", TLSClientConfig: rest.TLSClientConfig{CAData: []byte("not a certificate")}}
 		request := newForwardRequest(t, config, 40000, 8080)
@@ -142,6 +155,7 @@ func TestRunPortForward(t *testing.T) {
 	})
 
 	t.Run("원격 포트가 0이면 포트 포워드 생성 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		request := newForwardRequest(t, &rest.Config{Host: "http://127.0.0.1:1"}, 40000, 0)
 

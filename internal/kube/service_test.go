@@ -9,6 +9,7 @@ import (
 )
 
 func TestBuildServiceDNS(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		service   string
@@ -22,6 +23,7 @@ func TestBuildServiceDNS(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			service, namespace := tt.service, tt.namespace
 
@@ -37,6 +39,7 @@ func TestBuildServiceDNS(t *testing.T) {
 }
 
 func TestPickHTTPPort(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		ports    []ServicePort
@@ -50,6 +53,7 @@ func TestPickHTTPPort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			svc := Service{Ports: tt.ports}
 
@@ -71,6 +75,7 @@ func TestPickHTTPPort(t *testing.T) {
 }
 
 func TestEligibility(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		svc        Service
@@ -86,6 +91,7 @@ func TestEligibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			svc := tt.svc
 
@@ -110,6 +116,7 @@ func TestEligibility(t *testing.T) {
 }
 
 func TestEligibilityError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		reason string
@@ -122,6 +129,7 @@ func TestEligibilityError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			reason := tt.reason
 
@@ -137,6 +145,7 @@ func TestEligibilityError(t *testing.T) {
 }
 
 func TestServiceFromCorev1(t *testing.T) {
+	t.Parallel()
 	newService := func(mutate func(*corev1.Service)) corev1.Service {
 		svc := corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "app"},
@@ -151,6 +160,7 @@ func TestServiceFromCorev1(t *testing.T) {
 	}
 
 	t.Run("이름이 있는 targetPort는 TargetPortName으로 보존한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		svc := newService(func(*corev1.Service) {})
 
@@ -168,6 +178,7 @@ func TestServiceFromCorev1(t *testing.T) {
 	})
 
 	t.Run("정수 targetPort는 TargetPort로 보존한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		svc := newService(func(s *corev1.Service) { s.Spec.Ports[0].TargetPort = intstr.FromInt32(8081) })
 
@@ -185,6 +196,7 @@ func TestServiceFromCorev1(t *testing.T) {
 	})
 
 	t.Run("헤드리스 서비스는 제외한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		svc := newService(func(s *corev1.Service) { s.Spec.ClusterIP = corev1.ClusterIPNone })
 
@@ -198,6 +210,7 @@ func TestServiceFromCorev1(t *testing.T) {
 	})
 
 	t.Run("NodePort 서비스는 제외한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		svc := newService(func(s *corev1.Service) { s.Spec.Type = corev1.ServiceTypeNodePort })
 

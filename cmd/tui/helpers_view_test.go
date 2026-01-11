@@ -14,7 +14,9 @@ import (
 )
 
 func TestPlanBulk(t *testing.T) {
+	t.Parallel()
 	t.Run("후보와 등록 불가와 이미 등록된 수와 후보가 있는 네임스페이스 수를 센다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		resources := sampleCluster()["dev"]
 		index := indexTunnels([]dns.DNSTunnel{tunnel("prod", "api", "web")})
@@ -33,6 +35,7 @@ func TestPlanBulk(t *testing.T) {
 	})
 
 	t.Run("자기 터널과 다른 터널이 쓰는 이름은 이미 등록된 것으로 빼고 대상에는 기억한 설정을 담는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		resources := sampleCluster()["dev"]
 		settings := map[string]store.TunnelSetting{
@@ -57,6 +60,7 @@ func TestPlanBulk(t *testing.T) {
 	})
 
 	t.Run("확인 문구는 범위와 건너뛸 수를 밝힌다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		plan := bulkPlan{Context: "dev", Targets: make([]kube.ServiceRef, 23), Namespaces: 12, NotRegistrable: 4, AlreadyRegistered: 2}
 
@@ -72,6 +76,7 @@ func TestPlanBulk(t *testing.T) {
 	})
 
 	t.Run("건너뛸 것이 없으면 네임스페이스 수만 적는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		plan := bulkPlan{Context: "dev", Targets: make([]kube.ServiceRef, 1), Namespaces: 1}
 
@@ -86,6 +91,7 @@ func TestPlanBulk(t *testing.T) {
 }
 
 func TestBulkSummary(t *testing.T) {
+	t.Parallel()
 	failure := kube.ServiceRegistrationFailure{Namespace: "api", Service: "grpc", Reason: "boom"}
 	cases := []struct {
 		name      string
@@ -103,6 +109,7 @@ func TestBulkSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			result, err := tc.result, tc.err
 
@@ -117,6 +124,7 @@ func TestBulkSummary(t *testing.T) {
 	}
 
 	t.Run("보고는 요약 한 줄 뒤에 미리 뺀 서비스와 건너뜀과 등록 불가와 실패와 오류를 한 줄씩 붙인다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		result := dns.BulkRegistrationResult{
 			Skipped:    []kube.ServiceRegistrationFailure{{Namespace: "api", Service: "web", Reason: "already registered (context prod)"}},
@@ -145,6 +153,7 @@ func TestBulkSummary(t *testing.T) {
 	})
 
 	t.Run("모두 등록되면 보고는 요약 한 줄이다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		result := dns.BulkRegistrationResult{Registered: make([]dns.DNSTunnel, 2)}
 
@@ -158,6 +167,7 @@ func TestBulkSummary(t *testing.T) {
 	})
 
 	t.Run("진행 라벨은 현재 서비스와 순번을 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		progress := kube.RegistrationProgress{Done: 3, Total: 23, Current: "web.api"}
 
@@ -171,6 +181,7 @@ func TestBulkSummary(t *testing.T) {
 	})
 
 	t.Run("마지막 진행 라벨은 마무리 단계를 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		progress := kube.RegistrationProgress{Done: 23, Total: 23}
 
@@ -185,6 +196,7 @@ func TestBulkSummary(t *testing.T) {
 }
 
 func TestComputeLayout(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		width, height int
@@ -197,6 +209,7 @@ func TestComputeLayout(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			width, height := tc.width, tc.height
 
@@ -211,6 +224,7 @@ func TestComputeLayout(t *testing.T) {
 	}
 
 	t.Run("compact에서는 모든 창이 전체 폭을 쓴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		compact := computeLayout(60, 20, 2)
 
@@ -226,6 +240,7 @@ func TestComputeLayout(t *testing.T) {
 }
 
 func TestAllocateWidths(t *testing.T) {
+	t.Parallel()
 	columns := []column{{natural: 20, minimum: 8}, {natural: 12, minimum: 9}}
 	cases := []struct {
 		name      string
@@ -238,6 +253,7 @@ func TestAllocateWidths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			available := tc.available
 
@@ -253,7 +269,9 @@ func TestAllocateWidths(t *testing.T) {
 }
 
 func TestHintsFor(t *testing.T) {
+	t.Parallel()
 	t.Run("좁으면 공통 키를 빼되 도움말과 종료는 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		width := 50
 
@@ -267,6 +285,7 @@ func TestHintsFor(t *testing.T) {
 	})
 
 	t.Run("확인 창 힌트는 좁으면 뒤쪽 키를 빼고 종료 키를 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		width := 60
 
@@ -280,6 +299,7 @@ func TestHintsFor(t *testing.T) {
 	})
 
 	t.Run("로딩 중에는 종료 키만 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		scope := scopeLoading
 
@@ -294,7 +314,9 @@ func TestHintsFor(t *testing.T) {
 }
 
 func TestHistoryAndDetailsText(t *testing.T) {
+	t.Parallel()
 	t.Run("기록은 시각과 수준과 여러 줄 본문을 그대로 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		at := time.Date(2026, 1, 2, 15, 4, 5, 0, time.UTC)
 		history := []store.Event{{ID: 1, Level: store.LevelError, Text: "boom [x]\nline two", Time: at}}
@@ -310,6 +332,7 @@ func TestHistoryAndDetailsText(t *testing.T) {
 	})
 
 	t.Run("상세는 이름표를 맞추고 값의 다음 줄을 들여 쓴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		details := []detail{{"Context", "dev"}, {"Discovery", "failed\nforbidden"}}
 
@@ -324,6 +347,7 @@ func TestHistoryAndDetailsText(t *testing.T) {
 	})
 
 	t.Run("포트 목록은 이름 없는 포트와 이름 있는 targetPort도 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		ports := []kube.ServicePort{{Port: 80, TargetPortName: "http"}, {Name: "grpc", Port: 50051, TargetPort: 9000, Protocol: "UDP"}}
 
@@ -338,6 +362,7 @@ func TestHistoryAndDetailsText(t *testing.T) {
 	})
 
 	t.Run("선택자는 키 순서로 보여 준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		selector := map[string]string{"tier": "api", "app": "web"}
 
@@ -352,6 +377,7 @@ func TestHistoryAndDetailsText(t *testing.T) {
 }
 
 func TestSmallHelpers(t *testing.T) {
+	t.Parallel()
 	colorCases := []struct {
 		name  string
 		color tcell.Color
@@ -362,6 +388,7 @@ func TestSmallHelpers(t *testing.T) {
 	}
 	for _, tc := range colorCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			color := tc.color
 
@@ -386,6 +413,7 @@ func TestSmallHelpers(t *testing.T) {
 	}
 	for _, tc := range neighborCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			from, step := tc.from, tc.step
 
@@ -400,6 +428,7 @@ func TestSmallHelpers(t *testing.T) {
 	}
 
 	t.Run("탭 줄은 포커스된 창을 괄호로 감싼다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		focus := store.FocusNamespaces
 
@@ -413,6 +442,7 @@ func TestSmallHelpers(t *testing.T) {
 	})
 
 	t.Run("상태 변화가 없으면 다시 그리지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		state := store.State{SelectedContext: "dev", TunnelsRevision: 3}
 

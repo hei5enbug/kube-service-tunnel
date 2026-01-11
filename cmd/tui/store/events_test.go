@@ -2,12 +2,16 @@ package store
 
 import (
 	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 )
 
 func TestNotify(t *testing.T) {
+	t.Parallel()
 	t.Run("Notify는 상태 줄과 기록에 같은 이벤트를 남기고 ID를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -28,6 +32,7 @@ func TestNotify(t *testing.T) {
 	})
 
 	t.Run("경고와 오류만 읽지 않은 수를 늘린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		levels := []Level{LevelInfo, LevelSuccess, LevelWarning, LevelError, LevelWarning}
@@ -44,6 +49,7 @@ func TestNotify(t *testing.T) {
 	})
 
 	t.Run("기록은 500개까지만 남기고 가장 오래된 것부터 버린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		total := HistoryLimit + 7
@@ -64,6 +70,7 @@ func TestNotify(t *testing.T) {
 	})
 
 	t.Run("이전에 받은 기록 조각은 새 Notify로 바뀌지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		for i := range HistoryLimit {
@@ -81,21 +88,48 @@ func TestNotify(t *testing.T) {
 	})
 }
 
+// manualScheduler records the expiry timers of a store so that a test fires them itself.
+type manualScheduler struct {
+	mu    sync.Mutex
+	tasks []scheduledTask
+}
+
+type scheduledTask struct {
+	delay time.Duration
+	fn    func()
+}
+
+func (m *manualScheduler) afterFunc(delay time.Duration, fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tasks = append(m.tasks, scheduledTask{delay: delay, fn: fn})
+}
+
+func (m *manualScheduler) scheduled() []scheduledTask {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.tasks)
+}
+
 func TestStatusExpiry(t *testing.T) {
+	t.Parallel()
 	t.Run("정보 이벤트는 TTL이 지나면 상태 줄에서 사라진다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		s := NewStore(WithStatusTTL(20 * time.Millisecond))
+		scheduler := &manualScheduler{}
+		s := NewStore(WithStatusTTL(20*time.Millisecond), withScheduler(scheduler.afterFunc))
+		s.Notify(LevelInfo, "short lived")
+		timers := scheduler.scheduled()
+		if len(timers) != 1 || timers[0].delay != 20*time.Millisecond {
+			t.Fatalf("timers = %+v, want one timer of the TTL", timers)
+		}
 
 		// when
-		s.Notify(LevelInfo, "short lived")
+		timers[0].fn()
 
 		// then
-		deadline := time.Now().Add(waitTimeout)
-		for s.GetState().Status.ID != 0 {
-			if time.Now().After(deadline) {
-				t.Fatal("info status did not expire")
-			}
-			time.Sleep(5 * time.Millisecond)
+		if got := s.GetState().Status.ID; got != 0 {
+			t.Fatalf("status id = %d, want expired", got)
 		}
 		if len(s.GetState().History) != 1 {
 			t.Fatal("expiry must keep the history entry")
@@ -103,21 +137,73 @@ func TestStatusExpiry(t *testing.T) {
 	})
 
 	t.Run("오래된 만료 타이머는 더 새로운 오류를 지우지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
-		s := NewStore(WithStatusTTL(20 * time.Millisecond))
+		scheduler := &manualScheduler{}
+		s := NewStore(WithStatusTTL(20*time.Millisecond), withScheduler(scheduler.afterFunc))
 		s.Notify(LevelInfo, "old")
-
-		// when
 		errID := s.Notify(LevelError, "broken")
 
+		// when
+		for _, timer := range scheduler.scheduled() {
+			timer.fn()
+		}
+
 		// then
-		time.Sleep(80 * time.Millisecond)
 		if got := s.GetState().Status; got.ID != errID || got.Text != "broken" {
 			t.Fatalf("status = %+v, want the error", got)
 		}
 	})
 
+	t.Run("경고와 오류는 만료 타이머를 걸지 않는다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		scheduler := &manualScheduler{}
+		s := NewStore(WithStatusTTL(20*time.Millisecond), withScheduler(scheduler.afterFunc))
+
+		// when
+		s.Notify(LevelWarning, "sticky")
+		s.Notify(LevelError, "broken")
+
+		// then
+		if timers := scheduler.scheduled(); len(timers) != 0 {
+			t.Fatalf("timers = %+v, want none", timers)
+		}
+	})
+
+	t.Run("TTL이 0이면 만료 타이머를 걸지 않는다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		scheduler := &manualScheduler{}
+		s := NewStore(WithStatusTTL(0), withScheduler(scheduler.afterFunc))
+
+		// when
+		s.Notify(LevelInfo, "kept")
+
+		// then
+		if timers := scheduler.scheduled(); len(timers) != 0 {
+			t.Fatalf("timers = %+v, want none", timers)
+		}
+	})
+
+	t.Run("기본 스케줄러는 지연 뒤에 함수를 한 번 실행한다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		ran := make(chan struct{}, 2)
+
+		// when
+		runAfter(0, func() { ran <- struct{}{} })
+
+		// then
+		select {
+		case <-ran:
+		case <-time.After(waitTimeout):
+			t.Fatal("scheduled function did not run")
+		}
+	})
+
 	t.Run("ExpireStatus는 ID가 다르면 아무것도 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		first := s.Notify(LevelInfo, "first")
@@ -133,6 +219,7 @@ func TestStatusExpiry(t *testing.T) {
 	})
 
 	t.Run("ExpireStatus는 ID가 같으면 상태 줄을 비운다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		id := s.Notify(LevelInfo, "only")
@@ -148,7 +235,9 @@ func TestStatusExpiry(t *testing.T) {
 }
 
 func TestStatusAndHistoryReset(t *testing.T) {
+	t.Parallel()
 	t.Run("ClearStatus는 상태 줄만 비우고 기록과 읽지 않은 수는 남긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		s.Notify(LevelWarning, "sticky")
@@ -164,6 +253,7 @@ func TestStatusAndHistoryReset(t *testing.T) {
 	})
 
 	t.Run("MarkHistoryRead는 지정한 ID까지의 경고와 오류를 읽음으로 만든다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		s.Notify(LevelError, "a")
@@ -179,6 +269,7 @@ func TestStatusAndHistoryReset(t *testing.T) {
 	})
 
 	t.Run("기록을 읽은 뒤에 도착한 경고는 읽지 않은 수에 남는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		shown := s.Notify(LevelError, "shown")
@@ -195,6 +286,7 @@ func TestStatusAndHistoryReset(t *testing.T) {
 }
 
 func TestLevelString(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		level Level
 		want  string
@@ -206,6 +298,7 @@ func TestLevelString(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("수준 %d는 %s로 표시된다", tc.level, tc.want), func(t *testing.T) {
+			t.Parallel()
 			// given
 			level := tc.level
 

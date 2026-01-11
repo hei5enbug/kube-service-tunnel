@@ -41,25 +41,34 @@ type rewriteFile interface {
 	Close() error
 }
 
-// File operations kept as variables so tests can inject failures.
-var (
-	createTempFile = func(dir, pattern string) (tempFile, error) {
-		f, err := os.CreateTemp(dir, pattern)
-		if err != nil {
-			return nil, err
-		}
-		return f, nil
+// fileOps groups the file operations used to rewrite the hosts file so tests can inject failures per adapter.
+type fileOps struct {
+	createTemp     func(dir, pattern string) (tempFile, error)
+	rename         func(oldpath, newpath string) error
+	openForRewrite func(path string) (rewriteFile, error)
+	effectiveUID   func() int
+}
+
+func defaultFileOps() fileOps {
+	return fileOps{
+		createTemp: func(dir, pattern string) (tempFile, error) {
+			f, err := os.CreateTemp(dir, pattern)
+			if err != nil {
+				return nil, err
+			}
+			return f, nil
+		},
+		rename: os.Rename,
+		openForRewrite: func(path string) (rewriteFile, error) {
+			f, err := os.OpenFile(path, os.O_WRONLY, 0)
+			if err != nil {
+				return nil, err
+			}
+			return f, nil
+		},
+		effectiveUID: os.Geteuid,
 	}
-	renameFile     = os.Rename
-	openForRewrite = func(path string) (rewriteFile, error) {
-		f, err := os.OpenFile(path, os.O_WRONLY, 0)
-		if err != nil {
-			return nil, err
-		}
-		return f, nil
-	}
-	effectiveUID = os.Geteuid
-)
+}
 
 var errMalformedSection = errors.New("hosts file has a malformed kube-service-tunnel section (missing end marker); fix the file manually")
 
@@ -71,6 +80,7 @@ type HostsFileAdapterInterface interface {
 
 type hostsFileAdapter struct {
 	hostsPath string
+	ops       fileOps
 	mu        sync.Mutex
 }
 
@@ -79,7 +89,7 @@ func NewHostsFileAdapter() *hostsFileAdapter {
 }
 
 func newHostsFileAdapterWithPath(path string) *hostsFileAdapter {
-	return &hostsFileAdapter{hostsPath: path}
+	return &hostsFileAdapter{hostsPath: path, ops: defaultFileOps()}
 }
 
 // section holds the line indexes of our start and end markers. start is -1 when absent.
@@ -175,7 +185,7 @@ func (h *hostsFileAdapter) update(mutate func(lines []string, sec section) ([]st
 	if !changed {
 		return nil
 	}
-	return writeHostsFile(h.hostsPath, renderLines(newLines), content)
+	return h.ops.writeHostsFile(h.hostsPath, renderLines(newLines), content)
 }
 
 func normalizeHostname(name string) (string, error) {
@@ -300,7 +310,7 @@ func renderLines(lines []string) string {
 
 // writeHostsFile replaces the file atomically, falling back to an in-place write when rename is not possible.
 // original is the content the caller read, used to undo a failed in-place write.
-func writeHostsFile(path, content string, original []byte) error {
+func (o fileOps) writeHostsFile(path, content string, original []byte) error {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return fmt.Errorf("resolve hosts file path: %w", err)
@@ -310,33 +320,33 @@ func writeHostsFile(path, content string, original []byte) error {
 		return fmt.Errorf("stat hosts file: %w", err)
 	}
 
-	tmpPath, err := writeTempBeside(resolved, info, content)
+	tmpPath, err := o.writeTempBeside(resolved, info, content)
 	if err != nil {
 		return err
 	}
-	renameErr := renameFile(tmpPath, resolved)
+	renameErr := o.rename(tmpPath, resolved)
 	if renameErr == nil {
 		return nil
 	}
 	_ = os.Remove(tmpPath)
 
-	return writeInPlace(resolved, []byte(content), original, renameErr)
+	return o.writeInPlace(resolved, []byte(content), original, renameErr)
 }
 
 // writeInPlace overwrites the file without truncating it first and puts original back when that fails.
-func writeInPlace(resolved string, content, original []byte, renameErr error) error {
-	writeErr := overwriteInPlace(resolved, content)
+func (o fileOps) writeInPlace(resolved string, content, original []byte, renameErr error) error {
+	writeErr := o.overwriteInPlace(resolved, content)
 	if writeErr == nil {
 		return nil
 	}
-	if restoreErr := overwriteInPlace(resolved, original); restoreErr != nil {
+	if restoreErr := o.overwriteInPlace(resolved, original); restoreErr != nil {
 		return fmt.Errorf(fallbackRestoreFailedFormat, renameErr, writeErr, restoreErr)
 	}
 	return fmt.Errorf(fallbackRestoredFormat, renameErr, writeErr)
 }
 
-func overwriteInPlace(path string, data []byte) error {
-	f, err := openForRewrite(path)
+func (o fileOps) overwriteInPlace(path string, data []byte) error {
+	f, err := o.openForRewrite(path)
 	if err != nil {
 		return fmt.Errorf("open hosts file: %w", err)
 	}
@@ -365,14 +375,14 @@ func replaceContents(f rewriteFile, data []byte) error {
 }
 
 // writeTempBeside creates a synced temp file next to target carrying target's mode and owner.
-func writeTempBeside(target string, info os.FileInfo, content string) (string, error) {
-	tmp, err := createTempFile(filepath.Dir(target), tempFilePattern)
+func (o fileOps) writeTempBeside(target string, info os.FileInfo, content string) (string, error) {
+	tmp, err := o.createTemp(filepath.Dir(target), tempFilePattern)
 	if err != nil {
 		return "", fmt.Errorf("create temp hosts file: %w", err)
 	}
 	tmpPath := tmp.Name()
 
-	if err := fillTemp(tmp, info, content); err != nil {
+	if err := o.fillTemp(tmp, info, content); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 		return "", err
@@ -384,7 +394,7 @@ func writeTempBeside(target string, info os.FileInfo, content string) (string, e
 	return tmpPath, nil
 }
 
-func fillTemp(tmp tempFile, info os.FileInfo, content string) error {
+func (o fileOps) fillTemp(tmp tempFile, info os.FileInfo, content string) error {
 	if _, err := tmp.WriteString(content); err != nil {
 		return fmt.Errorf("write temp hosts file: %w", err)
 	}
@@ -394,7 +404,7 @@ func fillTemp(tmp tempFile, info os.FileInfo, content string) error {
 	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		return fmt.Errorf("chmod temp hosts file: %w", err)
 	}
-	if effectiveUID() != 0 {
+	if o.effectiveUID() != 0 {
 		return nil
 	}
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {

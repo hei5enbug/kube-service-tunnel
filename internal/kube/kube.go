@@ -97,7 +97,11 @@ type kubeAdapter struct {
 }
 
 func NewKubeAdapter(kubeconfigPath string) (KubeAdapterInterface, error) {
-	ctxClient, err := NewContextClient(kubeconfigPath)
+	return newKubeAdapter(kubeconfigPath, DefaultKubeconfigPath)
+}
+
+func newKubeAdapter(kubeconfigPath string, defaultPath defaultPathFunc) (KubeAdapterInterface, error) {
+	ctxClient, err := newContextClient(kubeconfigPath, defaultPath)
 	if err != nil {
 		return nil, err
 	}

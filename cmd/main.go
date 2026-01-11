@@ -21,11 +21,15 @@ const (
 	kubeconfigUsage = "Path to kubeconfig file (default: ~/.kube/config)"
 )
 
+type releaser interface {
+	Release() error
+}
+
 type runDeps struct {
 	name      string
 	hostsPath string
 	lockPath  string
-	acquire   func(path string) (*instance.Lock, error)
+	acquire   func(path string) (releaser, error)
 	runTUI    func(kubeconfigPath string) error
 	// silenceKubeLogs stops client-go's klog output, which would otherwise corrupt the terminal the TUI draws on.
 	silenceKubeLogs func()
@@ -36,11 +40,19 @@ func defaultDeps() runDeps {
 		name:      os.Args[0],
 		hostsPath: hostsPath,
 		lockPath:  instance.DefaultLockPath,
-		acquire:   instance.Acquire,
+		acquire:   acquireInstanceLock,
 		runTUI:    tui.Run,
 
 		silenceKubeLogs: silenceKubeLogs,
 	}
+}
+
+func acquireInstanceLock(path string) (releaser, error) {
+	lock, err := instance.Acquire(path)
+	if err != nil {
+		return nil, err
+	}
+	return lock, nil
 }
 
 func silenceKubeLogs() {
@@ -90,7 +102,11 @@ func run(args []string, stderr io.Writer, deps runDeps) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return exitFailure
 	}
-	defer lock.Release()
+	defer func() {
+		if err := lock.Release(); err != nil {
+			fmt.Fprintf(stderr, "Warning: %v\n", err)
+		}
+	}()
 
 	deps.silenceKubeLogs()
 	if err := deps.runTUI(kubeconfigPath); err != nil {

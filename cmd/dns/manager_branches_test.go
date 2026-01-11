@@ -39,7 +39,11 @@ func registerDefault(t *testing.T, manager *DNSManager, name string) DNSTunnel {
 }
 
 func TestNewDNSManager(t *testing.T) {
+	t.Parallel()
+
 	t.Run("유효한 kubeconfig 파일이면 클러스터에 접속하지 않고 매니저를 만든다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "config")
 		if err := os.WriteFile(path, []byte(minimalKubeconfig), 0o600); err != nil {
@@ -59,6 +63,8 @@ func TestNewDNSManager(t *testing.T) {
 	})
 
 	t.Run("kubeconfig 파일이 없으면 감싼 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "missing")
 
@@ -76,7 +82,11 @@ func TestNewDNSManager(t *testing.T) {
 }
 
 func TestRegisterDNSTunnelBranches(t *testing.T) {
+	t.Parallel()
+
 	t.Run("컨텍스트, 서비스 이름, 네임스페이스 중 하나라도 비어 있으면 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		tests := []struct {
 			name        string
 			contextName string
@@ -88,6 +98,8 @@ func TestRegisterDNSTunnelBranches(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
 				// given
 				manager, kubeFake, _, _ := newTestManager()
 
@@ -106,6 +118,8 @@ func TestRegisterDNSTunnelBranches(t *testing.T) {
 	})
 
 	t.Run("쿠버네티스 어댑터가 실패하면 그 오류를 돌려주고 아무것도 등록하지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		cause := errors.New("no pod")
@@ -126,6 +140,8 @@ func TestRegisterDNSTunnelBranches(t *testing.T) {
 	})
 
 	t.Run("프록시 시작에 실패하면 포워드를 멈추고 시작 오류와 중지 오류를 함께 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		proxyFake.startErr = errors.New("port busy")
@@ -148,7 +164,11 @@ func TestRegisterDNSTunnelBranches(t *testing.T) {
 }
 
 func TestUnregisterDNSTunnelBranches(t *testing.T) {
+	t.Parallel()
+
 	t.Run("DNS URL이 비어 있으면 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, _, _, _ := newTestManager()
 
@@ -162,6 +182,8 @@ func TestUnregisterDNSTunnelBranches(t *testing.T) {
 	})
 
 	t.Run("등록되지 않은 DNS URL이면 찾을 수 없다는 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 
@@ -178,6 +200,8 @@ func TestUnregisterDNSTunnelBranches(t *testing.T) {
 	})
 
 	t.Run("포워드 중지에 실패해도 목록 항목은 지우고 감싼 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		registerDefault(t, manager, "web")
@@ -197,6 +221,8 @@ func TestUnregisterDNSTunnelBranches(t *testing.T) {
 	})
 
 	t.Run("포워드가 이미 없어졌다면 오류 없이 성공한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		registerDefault(t, manager, "web")
@@ -212,6 +238,8 @@ func TestUnregisterDNSTunnelBranches(t *testing.T) {
 	})
 
 	t.Run("여러 터널 중 하나를 지우면 나머지는 순서대로 남는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, _, _, _ := newTestManager()
 		registerDefault(t, manager, "a")
@@ -233,7 +261,11 @@ func TestUnregisterDNSTunnelBranches(t *testing.T) {
 }
 
 func TestTunnelLostBranches(t *testing.T) {
+	t.Parallel()
+
 	t.Run("호스트 항목 제거가 실패하면 원인에 정리 실패를 덧붙여 핸들러에 알린다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, proxyFake := newTestManager()
 		registerDefault(t, manager, "web")
@@ -256,6 +288,8 @@ func TestTunnelLostBranches(t *testing.T) {
 	})
 
 	t.Run("핸들러가 없어도 끊어진 터널은 제거한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		registerDefault(t, manager, "web")
@@ -271,7 +305,11 @@ func TestTunnelLostBranches(t *testing.T) {
 }
 
 func TestStopForwards(t *testing.T) {
+	t.Parallel()
+
 	t.Run("중지에 실패한 포워드마다 DNS URL을 붙여 오류를 합친다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		cause := errors.New("stop stuck")
@@ -288,6 +326,8 @@ func TestStopForwards(t *testing.T) {
 	})
 
 	t.Run("이미 없어진 포워드는 오류로 치지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		kubeFake.stopErr = kube.ErrPortForwardNotFound

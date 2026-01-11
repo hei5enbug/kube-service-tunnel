@@ -98,7 +98,7 @@ func (a *App) startBulk(plan bulkPlan) {
 	if !a.store.TryBeginLoading(label) {
 		return
 	}
-	go a.runBulk(plan)
+	a.background(func() { a.runBulk(plan) })
 }
 
 func (a *App) runBulk(plan bulkPlan) {

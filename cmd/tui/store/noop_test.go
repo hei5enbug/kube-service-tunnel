@@ -33,7 +33,9 @@ func deliveredDuring(t *testing.T, s *Store, change func()) int {
 }
 
 func TestNoOpSettersDoNotNotify(t *testing.T) {
+	t.Parallel()
 	t.Run("ClearStatus는 상태 줄이 비어 있으면 리스너에게 알리지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -47,6 +49,7 @@ func TestNoOpSettersDoNotNotify(t *testing.T) {
 	})
 
 	t.Run("MarkHistoryRead는 읽지 않은 수가 그대로면 리스너에게 알리지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore(WithStatusTTL(0))
 		last := s.Notify(LevelError, "a")
@@ -62,6 +65,7 @@ func TestNoOpSettersDoNotNotify(t *testing.T) {
 	})
 
 	t.Run("ActivateContext는 이미 활성인 컨텍스트면 네임스페이스 선택을 건드리지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetAllResources(sampleResources(), "dev")
@@ -77,6 +81,7 @@ func TestNoOpSettersDoNotNotify(t *testing.T) {
 	})
 
 	t.Run("ActivateNamespace는 이미 선택한 네임스페이스면 알리지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetAllResources(sampleResources(), "dev")
@@ -91,6 +96,7 @@ func TestNoOpSettersDoNotNotify(t *testing.T) {
 	})
 
 	t.Run("SetLoading은 같은 값이면 알리지 않고 라벨도 지우지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.TryBeginLoading("busy")
@@ -105,6 +111,7 @@ func TestNoOpSettersDoNotNotify(t *testing.T) {
 	})
 
 	t.Run("SetFocus는 같은 영역이면 알리지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 		s.SetFocus(FocusServices)
@@ -119,6 +126,7 @@ func TestNoOpSettersDoNotNotify(t *testing.T) {
 	})
 
 	t.Run("바뀌는 세터는 정확히 한 번 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -133,7 +141,9 @@ func TestNoOpSettersDoNotNotify(t *testing.T) {
 }
 
 func TestSetAllResourcesWithoutContexts(t *testing.T) {
+	t.Parallel()
 	t.Run("컨텍스트가 하나도 없으면 활성 컨텍스트는 비어 있다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 
@@ -148,6 +158,7 @@ func TestSetAllResourcesWithoutContexts(t *testing.T) {
 	})
 
 	t.Run("선호 컨텍스트가 없으면 이름순 첫 컨텍스트를 고른다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		s := NewStore()
 

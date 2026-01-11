@@ -25,7 +25,11 @@ func registerWeb(t *testing.T, manager *DNSManager, target kube.ServiceRef) DNST
 }
 
 func TestUpdateTunnel(t *testing.T) {
+	t.Parallel()
+
 	t.Run("호스트 이름만 바꾸면 새 항목과 경로를 만들고 이전 것을 지우며 포워드는 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
@@ -52,25 +56,28 @@ func TestUpdateTunnel(t *testing.T) {
 	})
 
 	t.Run("포트만 바꾸면 같은 파드에 새 포워드를 열고 경로를 옮긴 뒤 이전 포워드를 멈춘다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
 
 		// when
-		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.default", 41000)
+		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.default", port)
 
 		// then
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		wantStart := []startedForward{{contextName: "ctx", namespace: "default", pod: old.Pod, remotePort: old.RemotePort, localPort: 41000}}
+		wantStart := []startedForward{{contextName: "ctx", namespace: "default", pod: old.Pod, remotePort: old.RemotePort, localPort: port}}
 		if got := kubeFake.startedForwards(); !reflect.DeepEqual(got, wantStart) {
 			t.Fatalf("started = %+v, want %+v", got, wantStart)
 		}
-		if updated.LocalPort != 41000 || updated.RequestedLocalPort != 41000 || updated.ForwardKey == old.ForwardKey {
+		if updated.LocalPort != port || updated.RequestedLocalPort != port || updated.ForwardKey == old.ForwardKey {
 			t.Fatalf("updated = %+v", updated)
 		}
-		if proxyFake.routePort("web.default") != 41000 || !hostsFake.has("web.default") {
+		if proxyFake.routePort("web.default") != port || !hostsFake.has("web.default") {
 			t.Fatalf("route port = %d, hosts entry = %v", proxyFake.routePort("web.default"), hostsFake.has("web.default"))
 		}
 		if got := kubeFake.stoppedKeys(); !reflect.DeepEqual(got, []string{old.ForwardKey}) {
@@ -79,21 +86,24 @@ func TestUpdateTunnel(t *testing.T) {
 	})
 
 	t.Run("호스트 이름과 포트를 함께 바꾼다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
 
 		// when
-		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "app.local", 41000)
+		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "app.local", port)
 
 		// then
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		if updated.DNSURL != "app.local" || updated.LocalPort != 41000 || updated.RequestedLocalPort != 41000 {
+		if updated.DNSURL != "app.local" || updated.LocalPort != port || updated.RequestedLocalPort != port {
 			t.Fatalf("updated = %+v", updated)
 		}
-		if !hostsFake.has("app.local") || hostsFake.has("web.default") || proxyFake.routePort("app.local") != 41000 || proxyFake.hasRoute("web.default") {
+		if !hostsFake.has("app.local") || hostsFake.has("web.default") || proxyFake.routePort("app.local") != port || proxyFake.hasRoute("web.default") {
 			t.Fatalf("hosts/proxy not switched")
 		}
 		if got := kubeFake.stoppedKeys(); !reflect.DeepEqual(got, []string{old.ForwardKey}) {
@@ -102,9 +112,12 @@ func TestUpdateTunnel(t *testing.T) {
 	})
 
 	t.Run("빈 호스트 이름과 0 포트는 기본값으로 되돌린다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
-		old := registerWeb(t, manager, kube.ServiceRef{Namespace: "default", Name: "web", Hostname: "custom.local", LocalPort: 41000})
+		old := registerWeb(t, manager, kube.ServiceRef{Namespace: "default", Name: "web", Hostname: "custom.local", LocalPort: port})
 
 		// when
 		updated, err := manager.UpdateTunnel(context.Background(), "custom.local", "", 0)
@@ -125,6 +138,8 @@ func TestUpdateTunnel(t *testing.T) {
 	})
 
 	t.Run("요청 포트가 없던 터널을 0 포트로 갱신하면 포트를 유지한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
@@ -139,6 +154,8 @@ func TestUpdateTunnel(t *testing.T) {
 	})
 
 	t.Run("바뀌는 것이 없으면 어댑터를 건드리지 않고 그대로 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
@@ -157,6 +174,8 @@ func TestUpdateTunnel(t *testing.T) {
 	})
 
 	t.Run("현재 포트와 같은 포트를 요청하면 포워드를 옮기지 않고 요청 포트만 기록한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
@@ -177,13 +196,16 @@ func TestUpdateTunnel(t *testing.T) {
 	})
 
 	t.Run("갱신해도 목록에서의 위치를 유지한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, _, _, _ := newTestManager()
 		registerWeb(t, manager, kube.ServiceRef{Namespace: "default", Name: "web", LocalPort: 40000})
 		registerWeb(t, manager, kube.ServiceRef{Namespace: "default", Name: "api", LocalPort: 40001})
 
 		// when
-		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", 41000)
+		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", port)
 
 		// then
 		got := manager.GetAllDNSTunnels()
@@ -194,12 +216,16 @@ func TestUpdateTunnel(t *testing.T) {
 }
 
 func TestUpdateTunnelRefusals(t *testing.T) {
+	t.Parallel()
+
 	t.Run("검증에 실패하면 아무것도 바꾸지 않고 오류를 낸다", func(t *testing.T) {
+		t.Parallel()
+
 		busy, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
-		defer busy.Close()
+		t.Cleanup(func() { _ = busy.Close() })
 		busyPort := int32(busy.Addr().(*net.TCPAddr).Port)
 
 		tests := []struct {
@@ -219,6 +245,8 @@ func TestUpdateTunnelRefusals(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
 				// given
 				manager, kubeFake, hostsFake, proxyFake := newTestManager()
 				registerWeb(t, manager, kube.ServiceRef{Namespace: "default", Name: "web", LocalPort: 40000})
@@ -241,7 +269,10 @@ func TestUpdateTunnelRefusals(t *testing.T) {
 	})
 
 	t.Run("종료된 뒤에는 갱신을 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, _, _ := newTestManager()
 		registerWeb(t, manager, kube.ServiceRef{})
 		if err := manager.Cleanup(); err != nil {
@@ -249,7 +280,7 @@ func TestUpdateTunnelRefusals(t *testing.T) {
 		}
 
 		// when
-		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", 41000)
+		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", port)
 
 		// then
 		if !errors.Is(err, errShuttingDown) || len(kubeFake.startedForwards()) != 0 {
@@ -259,18 +290,23 @@ func TestUpdateTunnelRefusals(t *testing.T) {
 }
 
 func TestUpdateTunnelFailures(t *testing.T) {
+	t.Parallel()
+
 	t.Run("새 포워드 시작에 실패하면 감싼 오류를 내고 모든 것을 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
 		cause := errors.New("pod gone")
 		kubeFake.startFn = func(string, int32, int32) (string, error) { return "", cause }
 
 		// when
-		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", 41000)
+		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", port)
 
 		// then
-		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "start port forward on 127.0.0.1:41000") {
+		if !errors.Is(err, cause) || !strings.Contains(err.Error(), fmt.Sprintf("start port forward on 127.0.0.1:%d", port)) {
 			t.Fatalf("err = %v, want wrapped start failure", err)
 		}
 		if got := manager.GetAllDNSTunnels(); !reflect.DeepEqual(got, []DNSTunnel{old}) {
@@ -285,19 +321,22 @@ func TestUpdateTunnelFailures(t *testing.T) {
 	})
 
 	t.Run("호스트 항목 추가에 실패하면 새 포워드를 멈추고 모든 것을 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
 		hostsFake.addErrs["web.local"] = errors.New("conflict")
 
 		// when
-		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", 41000)
+		_, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", port)
 
 		// then
 		if err == nil || !strings.Contains(err.Error(), "conflict") {
 			t.Fatalf("err = %v, want hosts failure", err)
 		}
-		if got := kubeFake.stoppedKeys(); !reflect.DeepEqual(got, []string{"fwd-web-pod-41000"}) {
+		if got := kubeFake.stoppedKeys(); !reflect.DeepEqual(got, []string{fmt.Sprintf("fwd-web-pod-%d", port)}) {
 			t.Fatalf("stopped = %v, want only the new forward", got)
 		}
 		if got := manager.GetAllDNSTunnels(); !reflect.DeepEqual(got, []DNSTunnel{old}) {
@@ -309,6 +348,8 @@ func TestUpdateTunnelFailures(t *testing.T) {
 	})
 
 	t.Run("호스트 이름만 바꾸다 항목 추가에 실패하면 포워드를 건드리지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, _ := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
@@ -324,37 +365,45 @@ func TestUpdateTunnelFailures(t *testing.T) {
 	})
 
 	t.Run("이전 설정 정리에 실패해도 갱신은 유지하고 갱신된 터널과 ErrUpdateCleanup을 함께 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
 		hostsFake.removeErr = errors.New("read-only")
 		kubeFake.stopErr = errors.New("stuck")
 
 		// when
-		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", 41000)
+		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", port)
 
 		// then
 		if !errors.Is(err, ErrUpdateCleanup) || !strings.Contains(err.Error(), "read-only") || !strings.Contains(err.Error(), "stuck") {
 			t.Fatalf("err = %v, want ErrUpdateCleanup with both causes", err)
 		}
-		if updated.DNSURL != "web.local" || updated.LocalPort != 41000 || updated.ForwardKey == old.ForwardKey {
+		if updated.DNSURL != "web.local" || updated.LocalPort != port || updated.ForwardKey == old.ForwardKey {
 			t.Fatalf("updated = %+v", updated)
 		}
 		if got := manager.GetAllDNSTunnels(); !reflect.DeepEqual(got, []DNSTunnel{updated}) {
 			t.Fatalf("tunnels = %+v, want the updated record", got)
 		}
-		if proxyFake.routePort("web.local") != 41000 || proxyFake.hasRoute("web.default") {
+		if proxyFake.routePort("web.local") != port || proxyFake.hasRoute("web.default") {
 			t.Fatalf("proxy routes not switched")
 		}
 	})
 }
 
 func TestUpdateTunnelLostCallback(t *testing.T) {
+	t.Parallel()
+
 	t.Run("이전 포워드 키의 끊김 알림은 갱신된 터널을 지우지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		old := registerWeb(t, manager, kube.ServiceRef{})
-		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", 41000)
+		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", port)
 		if err != nil {
 			t.Fatalf("update failed: %v", err)
 		}
@@ -371,10 +420,13 @@ func TestUpdateTunnelLostCallback(t *testing.T) {
 	})
 
 	t.Run("새 포워드 키가 끊기면 갱신된 호스트 이름의 항목과 경로를 지운다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
+		port := freePort(t)
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		registerWeb(t, manager, kube.ServiceRef{})
-		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", 41000)
+		updated, err := manager.UpdateTunnel(context.Background(), "web.default", "web.local", port)
 		if err != nil {
 			t.Fatalf("update failed: %v", err)
 		}

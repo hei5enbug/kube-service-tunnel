@@ -101,7 +101,7 @@ func (a *App) startUpdate(request editRequest) {
 	if !a.store.TryBeginLoading("Updating " + tunnelURL(request.tunnel) + "…") {
 		return
 	}
-	go a.runUpdate(request)
+	a.background(func() { a.runUpdate(request) })
 }
 
 // runUpdate remembers the setting only when the update took effect, including when just the cleanup failed.

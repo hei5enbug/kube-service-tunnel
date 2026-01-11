@@ -47,7 +47,10 @@ type portForwardClient struct {
 	detectLoss   podLossDetector
 	stopTimeout  time.Duration
 	readyTimeout time.Duration
-	mu           sync.Mutex
+	// background tracks the forward watchers and pod monitors, including the lost handler call they make.
+	// Only tests wait on it, to know that nothing more can be reported.
+	background sync.WaitGroup
+	mu         sync.Mutex
 }
 
 type PortForward struct {
@@ -132,11 +135,19 @@ func (p *portForwardClient) StartPortForward(ctx context.Context, contextName, n
 		return "", err
 	}
 
-	go p.watchForward(forward)
+	p.goTracked(func() { p.watchForward(forward) })
 	if clientset != nil {
-		go p.monitorPod(forward, clientset, expectedUID)
+		p.goTracked(func() { p.monitorPod(forward, clientset, expectedUID) })
 	}
 	return key, nil
+}
+
+func (p *portForwardClient) goTracked(fn func()) {
+	p.background.Add(1)
+	go func() {
+		defer p.background.Done()
+		fn()
+	}()
 }
 
 func (p *portForwardClient) add(forward *PortForward) error {

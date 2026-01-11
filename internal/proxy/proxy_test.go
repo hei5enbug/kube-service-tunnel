@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -62,7 +63,11 @@ func get(t *testing.T, addr, host string) (int, string) {
 }
 
 func TestProxyAdapter(t *testing.T) {
+	t.Parallel()
+
 	t.Run("루프백 주소에만 바인딩한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 
@@ -80,6 +85,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("대소문자가 섞인 Host와 :80 포트가 있어도 백엔드로 전달한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, backendPort := newBackend(t)
 		p := startProxy(t)
@@ -95,6 +102,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("호스트 끝의 점 하나를 무시하고 백엔드로 전달한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, backendPort := newBackend(t)
 		p := startProxy(t)
@@ -110,6 +119,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("등록되지 않은 호스트는 404를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 
@@ -123,6 +134,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("삭제한 경로는 404를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, backendPort := newBackend(t)
 		p := startProxy(t)
@@ -139,6 +152,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("이미 실행 중이면 다시 시작해도 오류 없이 같은 주소를 유지한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 		first := p.addr()
@@ -156,6 +171,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("Stop은 nil을 반환하고 두 번 호출해도 안전하다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 		firstErr := p.Stop()
@@ -170,24 +187,31 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("Stop 이후 포트가 닫힌다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
-		addr := p.addr()
+		listener := p.listener
 		if err := p.Stop(); err != nil {
 			t.Fatalf("stop: %v", err)
 		}
 
 		// when
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		conn, err := listener.Accept()
 
 		// then
 		if err == nil {
 			_ = conn.Close()
-			t.Fatal("expected dial to fail after Stop")
+			t.Fatal("expected accept to fail after Stop")
+		}
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("err = %v, want net.ErrClosed", err)
 		}
 	})
 
 	t.Run("Stop 이후 다시 시작해도 그 전에 추가한 경로로 전달한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, backendPort := newBackend(t)
 		p := startProxy(t)
@@ -209,6 +233,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("Stop은 등록된 경로를 비운다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		_, backendPort := newBackend(t)
 		p := startProxy(t)
@@ -230,6 +256,8 @@ func TestProxyAdapter(t *testing.T) {
 	})
 
 	t.Run("이미 사용 중인 포트면 시작 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		occupied, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -251,6 +279,8 @@ func TestProxyAdapter(t *testing.T) {
 }
 
 func TestNormalizeHost(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]string{
 		"Foo.Example.com":       "foo.example.com",
 		"foo.example.com:80":    "foo.example.com",
@@ -259,6 +289,8 @@ func TestNormalizeHost(t *testing.T) {
 	}
 	for input, want := range cases {
 		t.Run("호스트 "+input+"를 "+want+"로 정규화한다", func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			raw := input
 

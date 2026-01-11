@@ -12,7 +12,10 @@ import (
 	"github.com/rivo/tview"
 )
 
-const eventLoopTimeout = 5 * time.Second
+const (
+	eventLoopTimeout = 5 * time.Second
+	pollInterval     = time.Millisecond
+)
 
 type testConfig struct {
 	manager      *fakeManager
@@ -41,10 +44,6 @@ func withStore(options ...store.Option) testOption {
 	return func(c *testConfig) { c.storeOptions = options }
 }
 
-func withSize(width, height int) testOption {
-	return func(c *testConfig) { c.width, c.height = width, height }
-}
-
 type runningApp struct {
 	app     *App
 	screen  tcell.SimulationScreen
@@ -52,7 +51,13 @@ type runningApp struct {
 	kube    *fakeKube
 	copier  *fakeCopier
 	done    chan error
+	ticks   chan time.Time
+	flushed chan struct{}
 }
+
+// flushKey is consumed by the input capture that startTestApp wraps. Keys reach the event loop in order, so
+// once the capture sees it, every key injected before it has been handled.
+const flushKey = tcell.KeyF24
 
 func startTestApp(t *testing.T, options ...testOption) *runningApp {
 	t.Helper()
@@ -63,6 +68,7 @@ func startTestApp(t *testing.T, options ...testOption) *runningApp {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
+	ticks := make(chan time.Time)
 	screen := tcell.NewSimulationScreen("UTF-8")
 	app := newApp(ctx, cancel, dependencies{
 		manager:     config.manager,
@@ -70,10 +76,22 @@ func startTestApp(t *testing.T, options ...testOption) *runningApp {
 		copier:      config.copier,
 		store:       store.NewStore(config.storeOptions...),
 		screen:      screen,
+		frameTicker: func() (<-chan time.Time, func()) { return ticks, func() {} },
 	})
 	screen.SetSize(config.width, config.height)
 
-	running := &runningApp{app: app, screen: screen, manager: config.manager, kube: config.kube, copier: config.copier, done: make(chan error)}
+	running := &runningApp{
+		app: app, screen: screen, manager: config.manager, kube: config.kube, copier: config.copier,
+		done: make(chan error), ticks: ticks, flushed: make(chan struct{}, 16),
+	}
+	globalKey := app.app.GetInputCapture()
+	app.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == flushKey {
+			running.flushed <- struct{}{}
+			return nil
+		}
+		return globalKey(event)
+	})
 	go func() {
 		_ = app.app.Run()
 		close(running.done)
@@ -137,6 +155,8 @@ func uiValue[T any](t *testing.T, r *runningApp, fn func() T) T {
 	return value
 }
 
+// eventually polls condition until it holds. The timeout only bounds a failing test; a passing one returns as
+// soon as the condition holds.
 func eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(eventLoopTimeout)
@@ -144,7 +164,41 @@ func eventually(t *testing.T, what string, condition func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(pollInterval)
+	}
+}
+
+// settle waits until every key injected so far has been handled and every goroutine that a handler started has
+// returned, so that a test can assert that nothing happened without waiting a fixed time. It closes the given
+// gates first, which lets work that waits on a gate finish.
+func (r *runningApp) settle(t *testing.T, release ...chan struct{}) {
+	t.Helper()
+	r.screen.InjectKey(flushKey, 0, tcell.ModNone)
+	select {
+	case <-r.flushed:
+	case <-time.After(eventLoopTimeout):
+		t.Fatal("event loop did not handle the injected keys")
+	}
+	for _, gate := range release {
+		close(gate)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		r.app.work.Wait()
+		finished <- nil
+	}()
+	if !waitFor(finished, eventLoopTimeout) {
+		t.Fatal("background work did not finish")
+	}
+}
+
+// tick advances the loading animation by one frame.
+func (r *runningApp) tick(t *testing.T) {
+	t.Helper()
+	select {
+	case r.ticks <- time.Time{}:
+	case <-time.After(eventLoopTimeout):
+		t.Fatal("loading animation did not take the tick")
 	}
 }
 
@@ -212,7 +266,9 @@ func (r *runningApp) moveCursorTo(t *testing.T, area store.FocusArea, key string
 }
 
 func TestServiceEnterKeepsEventLoopAlive(t *testing.T) {
+	t.Parallel()
 	t.Run("네임스페이스가 없을 때 Services 창에서 Enter를 눌러도 UI가 멈추지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.app.app.QueueUpdate(func() { running.app.app.SetFocus(running.app.pane(store.FocusServices).table) })
@@ -229,7 +285,9 @@ func TestServiceEnterKeepsEventLoopAlive(t *testing.T) {
 }
 
 func TestCtrlCQuitsWhileLoading(t *testing.T) {
+	t.Parallel()
 	t.Run("로딩 중에도 Ctrl+C를 누르면 앱이 종료된다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.app.store.SetLoading(true)

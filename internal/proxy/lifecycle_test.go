@@ -10,8 +10,14 @@ import (
 	"time"
 )
 
-const waitTimeout = 5 * time.Second
+const (
+	// waitTimeout is only an upper bound; tests return as soon as their condition holds.
+	waitTimeout  = 10 * time.Second
+	pollInterval = time.Millisecond
+)
 
+// waitFor polls condition until it holds. The serve goroutine clears its state asynchronously
+// after the listener fails and exposes no signal for it, so polling is the only way to observe it.
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(waitTimeout)
@@ -19,7 +25,7 @@ func waitFor(t *testing.T, condition func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatal("condition not met before timeout")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(pollInterval)
 	}
 }
 
@@ -47,7 +53,11 @@ func (l failingCloseListener) Close() error {
 }
 
 func TestAddr(t *testing.T) {
+	t.Parallel()
+
 	t.Run("시작하기 전에는 빈 주소를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := NewProxyAdapter().(*proxyAdapter)
 
@@ -61,6 +71,8 @@ func TestAddr(t *testing.T) {
 	})
 
 	t.Run("Stop 이후에는 빈 주소를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 		if err := p.Stop(); err != nil {
@@ -78,7 +90,11 @@ func TestAddr(t *testing.T) {
 }
 
 func TestServeUnexpectedExit(t *testing.T) {
+	t.Parallel()
+
 	t.Run("리스너가 예기치 않게 닫히면 실행 상태를 비우고 다시 시작할 수 있다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 		if err := p.listener.Close(); err != nil {
@@ -99,6 +115,8 @@ func TestServeUnexpectedExit(t *testing.T) {
 	})
 
 	t.Run("예기치 않게 종료된 뒤에도 Stop은 오류 없이 끝난다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 		_ = p.listener.Close()
@@ -115,7 +133,11 @@ func TestServeUnexpectedExit(t *testing.T) {
 }
 
 func TestMarkStopped(t *testing.T) {
+	t.Parallel()
+
 	t.Run("현재 서버가 아닌 서버가 종료되면 실행 상태를 유지한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 		addr := p.addr()
@@ -130,6 +152,8 @@ func TestMarkStopped(t *testing.T) {
 	})
 
 	t.Run("현재 서버가 종료되면 서버, 리스너, 완료 채널을 비운다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		p := startProxy(t)
 		server, done := p.server, p.done
@@ -149,7 +173,11 @@ func TestMarkStopped(t *testing.T) {
 }
 
 func TestStopCloseFailure(t *testing.T) {
+	t.Parallel()
+
 	t.Run("서버 종료가 실패하면 감싼 오류를 반환하고 실행 상태를 비운다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		real, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -163,7 +191,11 @@ func TestStopCloseFailure(t *testing.T) {
 		p := NewProxyAdapter().(*proxyAdapter)
 		p.server, p.listener, p.done = server, listener, done
 		go p.serve(server, listener, done)
-		<-accepting
+		select {
+		case <-accepting:
+		case <-time.After(waitTimeout):
+			t.Fatal("serve did not start accepting before timeout")
+		}
 
 		// when
 		stopErr := p.Stop()

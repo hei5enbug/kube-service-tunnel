@@ -11,7 +11,11 @@ import (
 )
 
 func TestRegisterDNSTunnel(t *testing.T) {
+	t.Parallel()
+
 	t.Run("이미 등록된 호스트 이름은 쿠버네티스를 호출하지 않고 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
@@ -31,6 +35,8 @@ func TestRegisterDNSTunnel(t *testing.T) {
 	})
 
 	t.Run("종료된 뒤에는 등록을 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, _ := newTestManager()
 		if err := manager.Cleanup(); err != nil {
@@ -50,6 +56,8 @@ func TestRegisterDNSTunnel(t *testing.T) {
 	})
 
 	t.Run("호스트 파일 추가에 실패하면 경로와 포워드를 되돌린다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		hostsFake.addErrs["web.default"] = errors.New("conflict")
@@ -82,7 +90,11 @@ func bulkTunnels() kube.RegisterAllResult {
 }
 
 func TestRegisterServices(t *testing.T) {
+	t.Parallel()
+
 	t.Run("프록시 시작에 실패하면 시작된 모든 포워드를 중지한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		kubeFake.bulkResult = bulkTunnels()
@@ -107,6 +119,8 @@ func TestRegisterServices(t *testing.T) {
 	})
 
 	t.Run("한 터널의 호스트 파일 추가가 실패해도 나머지는 유지한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		kubeFake.bulkResult = bulkTunnels()
@@ -134,6 +148,8 @@ func TestRegisterServices(t *testing.T) {
 	})
 
 	t.Run("이미 등록된 호스트 이름과 소유 컨텍스트의 맵, 대상 목록을 쿠버네티스 어댑터에 넘긴다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx-a", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
@@ -154,6 +170,8 @@ func TestRegisterServices(t *testing.T) {
 	})
 
 	t.Run("건너뜀과 부적합 분류를 결과에 그대로 전달한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		skipped := kube.ServiceRegistrationFailure{Namespace: "ns", Service: "s", Reason: "already registered (context x)"}
@@ -177,6 +195,8 @@ func TestRegisterServices(t *testing.T) {
 	})
 
 	t.Run("프록시 시작에 실패해도 건너뜀과 부적합 분류는 유지한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, proxyFake := newTestManager()
 		kubeFake.bulkResult = bulkTunnels()
@@ -194,6 +214,8 @@ func TestRegisterServices(t *testing.T) {
 	})
 
 	t.Run("어댑터가 오류를 내면 시작된 포워드를 중지하고 분류된 결과와 오류를 함께 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		kubeFake.bulkResult = bulkTunnels()
@@ -216,6 +238,8 @@ func TestRegisterServices(t *testing.T) {
 	})
 
 	t.Run("진행 상황 콜백을 어댑터에 그대로 전달한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		kubeFake.bulkProgress = []kube.RegistrationProgress{{Done: 0, Total: 1, Current: "a.ns"}, {Done: 1, Total: 1}}
@@ -231,6 +255,8 @@ func TestRegisterServices(t *testing.T) {
 	})
 
 	t.Run("컨텍스트 이름이 없거나 종료된 뒤에는 어댑터를 호출하지 않고 거절한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		_, emptyErr := manager.RegisterServices(context.Background(), "", bulkTargets(), nil)
@@ -249,7 +275,11 @@ func TestRegisterServices(t *testing.T) {
 }
 
 func TestUnregisterDNSTunnel(t *testing.T) {
+	t.Parallel()
+
 	t.Run("호스트 항목 제거에 실패하면 모든 상태를 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
@@ -270,6 +300,8 @@ func TestUnregisterDNSTunnel(t *testing.T) {
 	})
 
 	t.Run("성공하면 호스트 항목, 경로, 포워드, 목록 항목을 모두 제거한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
@@ -290,7 +322,11 @@ func TestUnregisterDNSTunnel(t *testing.T) {
 }
 
 func TestCleanup(t *testing.T) {
+	t.Parallel()
+
 	t.Run("프록시 종료가 실패해도 호스트 항목을 지우고 오류를 합쳐 돌려준다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
@@ -312,6 +348,8 @@ func TestCleanup(t *testing.T) {
 	})
 
 	t.Run("여러 번 호출해도 안전하다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, _, _, _ := newTestManager()
 		_ = manager.Cleanup()
@@ -327,7 +365,11 @@ func TestCleanup(t *testing.T) {
 }
 
 func TestTunnelLost(t *testing.T) {
+	t.Parallel()
+
 	t.Run("끊어진 포워드의 터널을 제거하고 핸들러에 알린다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, hostsFake, proxyFake := newTestManager()
 		if _, err := manager.RegisterDNSTunnel(context.Background(), "ctx", kube.ServiceRef{Namespace: "default", Name: "web"}); err != nil {
@@ -353,6 +395,8 @@ func TestTunnelLost(t *testing.T) {
 	})
 
 	t.Run("알 수 없는 포워드 키는 무시한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		manager, kubeFake, _, _ := newTestManager()
 		called := false

@@ -17,7 +17,7 @@ func (a *App) start() {
 	if !a.store.TryBeginLoading(loadingContextsLabel) {
 		return
 	}
-	go a.loadAll()
+	a.background(a.loadAll)
 }
 
 func (a *App) loadAll() {
@@ -65,7 +65,7 @@ func (a *App) refreshActiveContext() {
 	if !a.store.TryBeginLoading(fmt.Sprintf("Refreshing %s…", name)) {
 		return
 	}
-	go a.runRefresh(name)
+	a.background(func() { a.runRefresh(name) })
 }
 
 func (a *App) runRefresh(name string) {

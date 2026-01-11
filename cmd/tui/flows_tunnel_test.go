@@ -35,6 +35,7 @@ func (r *runningApp) applyFilter(t *testing.T, area store.FocusArea, query strin
 }
 
 func TestTunnelDeletionKeys(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		press func(r *runningApp)
@@ -46,6 +47,7 @@ func TestTunnelDeletionKeys(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// given
 			running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "admin"), tunnel("dev", "api", "web")})
 			running.moveCursorTo(t, store.FocusTunnels, "web.api")
@@ -66,7 +68,9 @@ func TestTunnelDeletionKeys(t *testing.T) {
 }
 
 func TestTunnelFilterInput(t *testing.T) {
+	t.Parallel()
 	t.Run("Tunnels 필터에 d1을 입력해도 지우거나 창을 옮기지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "d1"), tunnel("dev", "api", "web")})
 		running.typeText("/")
@@ -96,6 +100,7 @@ func TestTunnelFilterInput(t *testing.T) {
 	})
 
 	t.Run("필터 입력에서 Esc를 누르면 질의를 지우고 표로 돌아간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "d1"), tunnel("dev", "api", "web")})
 		running.typeText("/d1")
@@ -117,6 +122,7 @@ func TestTunnelFilterInput(t *testing.T) {
 	})
 
 	t.Run("필터 입력에서 Tab을 누르면 질의를 유지하고 다음 창으로 간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "web")})
 		running.typeText("/we")
@@ -135,6 +141,7 @@ func TestTunnelFilterInput(t *testing.T) {
 	})
 
 	t.Run("필터 입력에서 F1을 누르면 도움말을 열고 닫으면 입력으로 돌아간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "web")})
 		running.typeText("/")
@@ -154,7 +161,9 @@ func TestTunnelFilterInput(t *testing.T) {
 }
 
 func TestFilteredDeletion(t *testing.T) {
+	t.Parallel()
 	t.Run("필터된 표에서는 보이는 행의 터널을 지운다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "admin"), tunnel("dev", "api", "web")})
 		running.applyFilter(t, store.FocusTunnels, "web")
@@ -167,6 +176,7 @@ func TestFilteredDeletion(t *testing.T) {
 	})
 
 	t.Run("잃은 터널로 다시 그린 뒤에도 커서가 같은 터널을 가리킨다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{
 			tunnel("dev", "api", "admin"), tunnel("dev", "api", "web"), tunnel("dev", "api", "website"), tunnel("dev", "api", "webz"),
@@ -187,10 +197,12 @@ func TestFilteredDeletion(t *testing.T) {
 }
 
 func TestCopyTunnelURL(t *testing.T) {
+	t.Parallel()
 	long := tunnel("dev", "payments-platform", "an-extremely-long-service-name-that-cannot-fit")
 	url := "http://" + long.DNSURL
 
 	t.Run("c 키는 잘리지 않은 원래 URL을 복사기에 넘긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{long})
 
@@ -205,6 +217,7 @@ func TestCopyTunnelURL(t *testing.T) {
 	})
 
 	t.Run("시스템 복사가 실패하면 OSC 52로 터미널에 보낸다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{long}, withCopier(&fakeCopier{err: errors.New("no pasteboard")}))
 
@@ -223,6 +236,7 @@ func TestCopyTunnelURL(t *testing.T) {
 	})
 
 	t.Run("지원하지 않는 플랫폼이면 실패 기록 없이 OSC 52만 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{long}, withCopier(&fakeCopier{err: clipboard.ErrUnsupported}))
 
@@ -237,6 +251,7 @@ func TestCopyTunnelURL(t *testing.T) {
 	})
 
 	t.Run("터널이 없으면 복사하지 않고 알린다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, nil)
 
@@ -252,7 +267,9 @@ func TestCopyTunnelURL(t *testing.T) {
 }
 
 func TestTunnelLost(t *testing.T) {
+	t.Parallel()
 	t.Run("잃은 터널은 목록에서 사라지고 다시 등록하는 방법을 경고한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := tunnelsApp(t, []dns.DNSTunnel{tunnel("dev", "api", "web")})
 

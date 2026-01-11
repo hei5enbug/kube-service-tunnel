@@ -2,7 +2,6 @@ package tui
 
 import (
 	"testing"
-	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
@@ -37,7 +36,9 @@ func dialogHandler(a *App) func(*tcell.EventKey, func(tview.Primitive)) {
 }
 
 func TestModalLifecycle(t *testing.T) {
+	t.Parallel()
 	t.Run("다른 창이 열려 있으면 새 창을 열기 전에 먼저 닫는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.onUI(t, running.app.showHistory)
@@ -55,6 +56,7 @@ func TestModalLifecycle(t *testing.T) {
 	})
 
 	t.Run("열린 창이 없을 때 닫아도 포커스는 그대로다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.typeText("3")
@@ -70,6 +72,7 @@ func TestModalLifecycle(t *testing.T) {
 	})
 
 	t.Run("창을 열기 전 포커스를 알 수 없으면 닫을 때 저장소의 포커스 창으로 돌아간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.typeText("?")
@@ -86,7 +89,9 @@ func TestModalLifecycle(t *testing.T) {
 }
 
 func TestLoadingRestoresFocus(t *testing.T) {
+	t.Parallel()
 	t.Run("창이 열린 채 로딩이 끝나면 포커스가 그 창으로 돌아간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.typeText("?")
@@ -105,6 +110,7 @@ func TestLoadingRestoresFocus(t *testing.T) {
 	})
 
 	t.Run("필터 입력 중 로딩이 끝나면 포커스가 필터 입력으로 돌아간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		running.typeText("/")
@@ -124,7 +130,24 @@ func TestLoadingRestoresFocus(t *testing.T) {
 		}
 	})
 
+	t.Run("틱이 올 때마다 로딩 창의 프레임이 넘어간다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		running := startTestApp(t)
+		running.app.store.TryBeginLoading("busy")
+		frame := func() int { return uiValue(t, running, func() int { return running.app.loading.frame }) }
+		eventually(t, "loading shown", func() bool { return uiValue(t, running, func() bool { return running.app.loading != nil }) })
+
+		// when
+		running.tick(t)
+		running.tick(t)
+
+		// then
+		eventually(t, "two frames", func() bool { return frame() == 2 })
+	})
+
 	t.Run("이미 멈춘 애니메이션이 틱을 받아도 로딩 상태를 건드리지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startTestApp(t)
 		stale := make(chan struct{})
@@ -135,7 +158,8 @@ func TestLoadingRestoresFocus(t *testing.T) {
 		}()
 
 		// when
-		time.Sleep(3 * loadingFrameInterval)
+		running.tick(t)
+		running.tick(t)
 
 		// then
 		if !eventLoopResponds(running.app.app) || uiValue(t, running, func() bool { return running.app.loading != nil }) {
@@ -149,7 +173,9 @@ func TestLoadingRestoresFocus(t *testing.T) {
 }
 
 func TestConfirmDialogKeys(t *testing.T) {
+	t.Parallel()
 	t.Run("오른쪽 화살표는 Register로 왼쪽 화살표는 Cancel로 포커스를 옮긴다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.openConfirm(t)
@@ -164,6 +190,7 @@ func TestConfirmDialogKeys(t *testing.T) {
 	})
 
 	t.Run("다른 문자 키는 확인 창을 닫지도 등록하지도 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.openConfirm(t)
@@ -172,13 +199,14 @@ func TestConfirmDialogKeys(t *testing.T) {
 		running.typeText("x")
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if running.confirmClosed(t) || len(running.manager.bulkCalls()) != 0 {
 			t.Fatal("an unrelated key changed the confirmation")
 		}
 	})
 
 	t.Run("취소한 뒤에 도착한 Register 입력은 등록을 시작하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.openConfirm(t)
@@ -192,7 +220,7 @@ func TestConfirmDialogKeys(t *testing.T) {
 		})
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if calls := running.manager.bulkCalls(); len(calls) != 0 {
 			t.Fatalf("bulk calls = %v, want none", calls)
 		}
@@ -202,6 +230,7 @@ func TestConfirmDialogKeys(t *testing.T) {
 	})
 
 	t.Run("결정이 끝난 뒤의 입력은 그 사이에 열린 다른 창을 닫지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := startLoadedApp(t)
 		running.openConfirm(t)
@@ -223,7 +252,9 @@ func TestConfirmDialogKeys(t *testing.T) {
 }
 
 func TestEditDialogGuards(t *testing.T) {
+	t.Parallel()
 	t.Run("취소가 끝난 뒤의 Esc는 그 사이에 열린 다른 창을 닫지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)
@@ -244,6 +275,7 @@ func TestEditDialogGuards(t *testing.T) {
 	})
 
 	t.Run("저장이 끝난 뒤의 Enter는 그 사이에 열린 다른 창을 닫지 않고 다시 저장하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.openEditDialog(t)
@@ -272,6 +304,7 @@ func TestEditDialogGuards(t *testing.T) {
 	})
 
 	t.Run("다른 작업이 진행 중이면 저장해도 수정을 시작하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		running := editApp(t, &fakeManager{tunnels: []dns.DNSTunnel{tunnel("dev", "api", "web")}})
 		running.app.store.TryBeginLoading("busy")
@@ -281,7 +314,7 @@ func TestEditDialogGuards(t *testing.T) {
 		running.onUI(t, func() { running.app.startUpdate(request) })
 
 		// then
-		time.Sleep(settleDelay)
+		running.settle(t)
 		if got := len(running.manager.updateCalls()); got != 0 {
 			t.Fatalf("update calls = %d, want 0", got)
 		}

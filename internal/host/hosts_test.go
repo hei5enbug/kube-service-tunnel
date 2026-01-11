@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const dockerBlock = "# Added by Docker Desktop\n" +
@@ -54,7 +55,11 @@ func ourSection(entries ...string) string {
 }
 
 func TestAddEntry(t *testing.T) {
+	t.Parallel()
+
 	t.Run("구간이 없으면 새 종료 마커와 함께 구간을 만든다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts)
 
@@ -72,6 +77,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("기존 레거시 구간 안에 항목을 추가한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		legacy := startMarker + "\n127.0.0.1\ta.local\n" + legacyEndMarker + "\n"
 		adapter, path := newFixture(t, baseHosts+legacy)
@@ -90,6 +97,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("Docker Desktop 구간이 앞에 있어도 우리 구간 안에만 항목을 추가한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts+dockerBlock+ourSection("a.local"))
 
@@ -107,6 +116,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("Docker Desktop 구간이 뒤에 있어도 우리 구간 안에만 항목을 추가한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts+ourSection("a.local")+dockerBlock)
 
@@ -124,6 +135,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("구간 밖 Docker Desktop 종료 마커만 있으면 새 구간을 만들고 Docker 구간은 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts+dockerBlock)
 
@@ -141,6 +154,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("종료 마커가 없는 구간이면 오류를 반환하고 파일을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		malformed := baseHosts + startMarker + "\n127.0.0.1\ta.local\n10.0.0.1 keep.local\n"
 		adapter, path := newFixture(t, malformed)
@@ -158,6 +173,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("구간 밖 줄에 이미 매핑된 호스트명이면 오류를 반환하고 파일을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		original := baseHosts + "10.0.0.5\tfoo.local bar.local # note\n"
 		adapter, path := newFixture(t, original)
@@ -175,6 +192,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("구간 밖 주석에만 있는 호스트명은 충돌로 보지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts+"# 10.0.0.5 foo.local\n10.0.0.6 other.local # foo.local\n")
 
@@ -191,19 +210,31 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("대소문자만 다른 중복 항목은 쓰기 없이 무시한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		original := baseHosts + ourSection("web.local")
 		adapter, path := newFixture(t, original)
-		before, _ := os.Stat(path)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+		before, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat before: %v", err)
+		}
 
 		// when
-		err := adapter.AddEntry("WEB.Local")
+		err = adapter.AddEntry("WEB.Local")
 
 		// then
 		if err != nil {
 			t.Fatalf("AddEntry error: %v", err)
 		}
-		after, _ := os.Stat(path)
+		after, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat after: %v", statErr)
+		}
 		if got := readFile(t, path); got != original {
 			t.Fatalf("file changed:\n%s", got)
 		}
@@ -213,6 +244,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("호스트명을 소문자로 기록한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts)
 
@@ -229,6 +262,8 @@ func TestAddEntry(t *testing.T) {
 	})
 
 	t.Run("빈 호스트명이면 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, _ := newFixture(t, baseHosts)
 
@@ -243,7 +278,11 @@ func TestAddEntry(t *testing.T) {
 }
 
 func TestRemoveEntry(t *testing.T) {
+	t.Parallel()
+
 	t.Run("우리 구간의 항목만 지우고 Docker Desktop 구간은 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		before := baseHosts + dockerBlock + ourSection("a.local", "b.local")
 		adapter, path := newFixture(t, before)
@@ -262,6 +301,8 @@ func TestRemoveEntry(t *testing.T) {
 	})
 
 	t.Run("구간 밖에 같은 이름이 있어도 건드리지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		before := baseHosts + "10.0.0.5\ta.local\n" + ourSection("b.local") + dockerBlock
 		adapter, path := newFixture(t, before)
@@ -279,6 +320,8 @@ func TestRemoveEntry(t *testing.T) {
 	})
 
 	t.Run("종료 마커가 없는 구간이면 오류를 반환하고 파일을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		malformed := baseHosts + startMarker + "\n127.0.0.1\ta.local\n"
 		adapter, path := newFixture(t, malformed)
@@ -297,7 +340,11 @@ func TestRemoveEntry(t *testing.T) {
 }
 
 func TestClearAllEntries(t *testing.T) {
+	t.Parallel()
+
 	t.Run("우리 구간만 지우고 앞뒤 Docker Desktop 구간은 그대로 둔다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts+dockerBlock+ourSection("a.local")+dockerBlock)
 
@@ -315,6 +362,8 @@ func TestClearAllEntries(t *testing.T) {
 	})
 
 	t.Run("레거시 종료 마커 구간도 지운다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		legacy := startMarker + "\n127.0.0.1\ta.local\n" + legacyEndMarker + "\n"
 		adapter, path := newFixture(t, baseHosts+legacy)
@@ -332,6 +381,8 @@ func TestClearAllEntries(t *testing.T) {
 	})
 
 	t.Run("종료 마커가 없는 구간이면 오류를 반환하고 파일을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		malformed := baseHosts + startMarker + "\n127.0.0.1\ta.local\n" + "10.0.0.1 keep.local\n"
 		adapter, path := newFixture(t, malformed)
@@ -349,6 +400,8 @@ func TestClearAllEntries(t *testing.T) {
 	})
 
 	t.Run("구간이 없으면 파일을 바꾸지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts+dockerBlock)
 
@@ -366,6 +419,8 @@ func TestClearAllEntries(t *testing.T) {
 }
 
 func TestMalformedSectionBeforeForeignSection(t *testing.T) {
+	t.Parallel()
+
 	malformed := baseHosts + startMarker + "\n127.0.0.1\ta.local\n" + dockerBlock
 
 	operations := map[string]func(*hostsFileAdapter) error{
@@ -376,6 +431,8 @@ func TestMalformedSectionBeforeForeignSection(t *testing.T) {
 
 	for name, operation := range operations {
 		t.Run(name+"은 종료 마커 없이 Docker Desktop 구간이 이어지면 오류를 내고 파일을 바이트 단위로 그대로 둔다", func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			adapter, path := newFixture(t, malformed)
 
@@ -394,7 +451,11 @@ func TestMalformedSectionBeforeForeignSection(t *testing.T) {
 }
 
 func TestWriteHostsFile(t *testing.T) {
+	t.Parallel()
+
 	t.Run("파일 권한을 유지한 채 내용을 갱신한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		path := filepath.Join(t.TempDir(), "hosts")
 		writeFile(t, path, baseHosts, 0o640)
@@ -417,6 +478,8 @@ func TestWriteHostsFile(t *testing.T) {
 	})
 
 	t.Run("심볼릭 링크 경로는 링크를 유지하고 대상 파일을 갱신한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		dir := t.TempDir()
 		target := filepath.Join(dir, "real-hosts")
@@ -447,6 +510,8 @@ func TestWriteHostsFile(t *testing.T) {
 	})
 
 	t.Run("성공 후 같은 디렉터리에 임시 파일을 남기지 않는다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter, path := newFixture(t, baseHosts)
 
@@ -467,6 +532,8 @@ func TestWriteHostsFile(t *testing.T) {
 	})
 
 	t.Run("hosts 파일이 없으면 오류를 반환한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given
 		adapter := newHostsFileAdapterWithPath(filepath.Join(t.TempDir(), "missing"))
 
@@ -481,7 +548,11 @@ func TestWriteHostsFile(t *testing.T) {
 }
 
 func TestNewHostsFileAdapter(t *testing.T) {
+	t.Parallel()
+
 	t.Run("기본 어댑터는 /etc/hosts 경로를 대상으로 한다", func(t *testing.T) {
+		t.Parallel()
+
 		// given / when
 		adapter := NewHostsFileAdapter()
 
@@ -493,6 +564,8 @@ func TestNewHostsFileAdapter(t *testing.T) {
 }
 
 func TestNormalizeHostname(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name  string
 		input string
@@ -509,6 +582,8 @@ func TestNormalizeHostname(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			input := tc.input
 
@@ -527,6 +602,8 @@ func TestNormalizeHostname(t *testing.T) {
 }
 
 func TestInvalidHostnameLeavesFileUntouched(t *testing.T) {
+	t.Parallel()
+
 	operations := map[string]func(*hostsFileAdapter) error{
 		"AddEntry":    func(a *hostsFileAdapter) error { return a.AddEntry("bad host") },
 		"RemoveEntry": func(a *hostsFileAdapter) error { return a.RemoveEntry("") },
@@ -534,6 +611,8 @@ func TestInvalidHostnameLeavesFileUntouched(t *testing.T) {
 
 	for name, operation := range operations {
 		t.Run(name+"은 잘못된 호스트명이면 오류를 반환하고 파일을 바꾸지 않는다", func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			adapter, path := newFixture(t, baseHosts)
 
@@ -552,6 +631,8 @@ func TestInvalidHostnameLeavesFileUntouched(t *testing.T) {
 }
 
 func TestRenderLines(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name  string
 		lines []string
@@ -564,6 +645,8 @@ func TestRenderLines(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			// given
 			lines := tc.lines
 

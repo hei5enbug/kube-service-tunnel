@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -19,8 +20,6 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-const watchRestartWait = 5 * time.Second
-
 func watchedPod(resourceVersion string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "web-1", Namespace: "app", UID: types.UID("uid-1"), ResourceVersion: resourceVersion},
@@ -32,14 +31,16 @@ func watchedPod(resourceVersion string) *corev1.Pod {
 type watchHarness struct {
 	clientset *fake.Clientset
 	mu        sync.Mutex
-	watchers  []*watch.RaceFreeFakeWatcher
-	options   []metav1.ListOptions
-	gets      int
-	getErrs   []error
+	// changed is closed and replaced whenever watchers, opens or gets change, so tests wait on it.
+	changed  chan struct{}
+	watchers []*watch.RaceFreeFakeWatcher
+	options  []metav1.ListOptions
+	gets     int
+	getErrs  []error
 	// openErrs holds the results of the next watch opens in order; a nil entry lets that open succeed.
 	openErrs []error
-	// opens counts every watch open attempt, failed or not.
-	opens int
+	// openTimes records when each watch open attempt happened, failed or not.
+	openTimes []time.Time
 }
 
 func newWatchHarness(pods ...*corev1.Pod) *watchHarness {
@@ -47,11 +48,12 @@ func newWatchHarness(pods ...*corev1.Pod) *watchHarness {
 	for _, pod := range pods {
 		objects = append(objects, pod)
 	}
-	h := &watchHarness{clientset: fake.NewClientset(objects...)}
+	h := &watchHarness{clientset: fake.NewClientset(objects...), changed: make(chan struct{})}
 	h.clientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		h.opens++
+		defer h.notifyLocked()
+		h.openTimes = append(h.openTimes, time.Now())
 		if len(h.openErrs) > 0 {
 			err := h.openErrs[0]
 			if len(h.openErrs) > 1 {
@@ -69,6 +71,7 @@ func newWatchHarness(pods ...*corev1.Pod) *watchHarness {
 	h.clientset.PrependReactor("get", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
+		defer h.notifyLocked()
 		h.gets++
 		if len(h.getErrs) == 0 {
 			return false, nil, nil
@@ -80,16 +83,36 @@ func newWatchHarness(pods ...*corev1.Pod) *watchHarness {
 	return h
 }
 
+// notifyLocked wakes everything waiting in waitFor. Callers hold h.mu.
+func (h *watchHarness) notifyLocked() {
+	close(h.changed)
+	h.changed = make(chan struct{})
+}
+
+// waitFor blocks until condition, evaluated with h.mu held, is true.
+func (h *watchHarness) waitFor(t *testing.T, condition func() bool, what string) {
+	t.Helper()
+	timeout := time.NewTimer(testWait)
+	defer timeout.Stop()
+	for {
+		h.mu.Lock()
+		satisfied, changed := condition(), h.changed
+		h.mu.Unlock()
+		if satisfied {
+			return
+		}
+		select {
+		case <-changed:
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
 func (h *watchHarness) watcherCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.watchers)
-}
-
-func (h *watchHarness) openCount() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.opens
 }
 
 func (h *watchHarness) getCount() int {
@@ -100,23 +123,22 @@ func (h *watchHarness) getCount() int {
 
 func (h *watchHarness) watcher(t *testing.T, index int) (*watch.RaceFreeFakeWatcher, metav1.ListOptions) {
 	t.Helper()
-	deadline := time.Now().Add(watchRestartWait)
-	for time.Now().Before(deadline) {
-		h.mu.Lock()
-		if len(h.watchers) > index {
-			defer h.mu.Unlock()
-			return h.watchers[index], h.options[index]
-		}
-		h.mu.Unlock()
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("watch #%d was not started", index)
-	return nil, metav1.ListOptions{}
+	h.waitFor(t, func() bool { return len(h.watchers) > index }, "watch #"+strconv.Itoa(index))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.watchers[index], h.options[index]
+}
+
+func (h *watchHarness) newMonitor(retryDelay time.Duration) *podWatch {
+	return &podWatch{pods: h.clientset.CoreV1().Pods("app"), namespace: "app", name: "web-1", retryDelay: retryDelay}
 }
 
 func (h *watchHarness) start(ctx context.Context) <-chan error {
+	return h.startMonitor(ctx, h.newMonitor(fastRetry))
+}
+
+func (h *watchHarness) startMonitor(ctx context.Context, monitor *podWatch) <-chan error {
 	result := make(chan error, 1)
-	monitor := &podWatch{pods: h.clientset.CoreV1().Pods("app"), namespace: "app", name: "web-1", retryDelay: 10 * time.Millisecond}
 	go func() { result <- monitor.run(ctx) }()
 	return result
 }
@@ -131,7 +153,7 @@ func (h *watchHarness) startUntilCleanup(t *testing.T) <-chan error {
 		cancel()
 		select {
 		case <-result:
-		case <-time.After(watchRestartWait):
+		case <-time.After(testWait):
 			t.Error("pod monitor did not stop after cancel")
 		}
 	})
@@ -140,21 +162,17 @@ func (h *watchHarness) startUntilCleanup(t *testing.T) <-chan error {
 
 func awaitLoss(t *testing.T, result <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(watchRestartWait):
-		t.Fatal("pod monitor did not report a result")
-		return nil
-	}
+	return receive(t, result, "the pod monitor result")
 }
 
-func assertNoResult(t *testing.T, result <-chan error, wait time.Duration) {
+// assertRunning fails the test when the monitor already ended. A monitor that lost the pod has returned
+// before it could open another watch, so checking right after the next watch opened is deterministic.
+func assertRunning(t *testing.T, result <-chan error) {
 	t.Helper()
 	select {
 	case err := <-result:
 		t.Fatalf("pod monitor ended unexpectedly: %v", err)
-	case <-time.After(wait):
+	default:
 	}
 }
 
@@ -166,7 +184,9 @@ func terminatingPod(resourceVersion string) *corev1.Pod {
 }
 
 func TestPodWatch_Loss(t *testing.T) {
+	t.Parallel()
 	t.Run("Deleted 이벤트가 오면 삭제됐다는 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		result := h.start(context.Background())
@@ -182,6 +202,7 @@ func TestPodWatch_Loss(t *testing.T) {
 	})
 
 	t.Run("시작할 때 파드가 없으면 삭제됐다는 오류를 돌려주고 감시를 열지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness()
 
@@ -198,6 +219,7 @@ func TestPodWatch_Loss(t *testing.T) {
 	})
 
 	t.Run("시작할 때 이미 종료 중인 파드는 종료 중이라는 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(terminatingPod("100"))
 
@@ -211,6 +233,7 @@ func TestPodWatch_Loss(t *testing.T) {
 	})
 
 	t.Run("삭제 시각이 생기면 종료 중이라는 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		result := h.start(context.Background())
@@ -226,6 +249,7 @@ func TestPodWatch_Loss(t *testing.T) {
 	})
 
 	t.Run("UID가 달라지면 교체됐다는 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		result := h.start(context.Background())
@@ -244,6 +268,7 @@ func TestPodWatch_Loss(t *testing.T) {
 
 	for _, phase := range []corev1.PodPhase{corev1.PodFailed, corev1.PodSucceeded} {
 		t.Run("단계가 "+string(phase)+"가 되면 그 단계를 알리는 오류를 돌려준다", func(t *testing.T) {
+			t.Parallel()
 			// given
 			h := newWatchHarness(watchedPod("100"))
 			result := h.start(context.Background())
@@ -264,7 +289,9 @@ func TestPodWatch_Loss(t *testing.T) {
 }
 
 func TestPodWatch_Watching(t *testing.T) {
+	t.Parallel()
 	t.Run("파드 이름을 필드 셀렉터로 지정해 마지막으로 읽은 버전부터 감시한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		ctx, cancel := context.WithCancel(context.Background())
@@ -281,6 +308,7 @@ func TestPodWatch_Watching(t *testing.T) {
 	})
 
 	t.Run("감시 채널이 닫혀도 마지막 버전부터 다시 감시하고 손실로 보고하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		result := h.start(context.Background())
@@ -295,7 +323,7 @@ func TestPodWatch_Watching(t *testing.T) {
 		if options.ResourceVersion != "101" {
 			t.Fatalf("resume resource version = %q, want 101", options.ResourceVersion)
 		}
-		assertNoResult(t, result, 100*time.Millisecond)
+		assertRunning(t, result)
 		second.Delete(watchedPod("102"))
 		if err := awaitLoss(t, result); err == nil || err.Error() != "pod app/web-1 was deleted" {
 			t.Fatalf("err = %v, want pod app/web-1 was deleted after resume", err)
@@ -303,6 +331,7 @@ func TestPodWatch_Watching(t *testing.T) {
 	})
 
 	t.Run("버전이 만료되면 파드를 다시 읽고 새 버전부터 감시한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		result := h.startUntilCleanup(t)
@@ -320,10 +349,11 @@ func TestPodWatch_Watching(t *testing.T) {
 		if options.ResourceVersion != "200" {
 			t.Fatalf("resource version after expiry = %q, want 200", options.ResourceVersion)
 		}
-		assertNoResult(t, result, 50*time.Millisecond)
+		assertRunning(t, result)
 	})
 
 	t.Run("버전이 만료된 사이 파드가 종료 중이 되었다면 다시 읽을 때 손실로 보고한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		result := h.start(context.Background())
@@ -342,9 +372,10 @@ func TestPodWatch_Watching(t *testing.T) {
 	})
 
 	t.Run("정상 이벤트와 다른 이름의 파드와 파드가 아닌 객체는 무시한다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
-		result := h.startUntilCleanup(t)
+		result := h.start(context.Background())
 		watcher, _ := h.watcher(t, 0)
 		other := watchedPod("101")
 		other.Name = "web-2"
@@ -355,12 +386,16 @@ func TestPodWatch_Watching(t *testing.T) {
 		watcher.Modify(other)
 		watcher.Action(watch.Bookmark, watchedPod("102"))
 		watcher.Action(watch.Modified, &corev1.Service{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "103"}})
+		watcher.Delete(watchedPod("104"))
 
 		// then
-		assertNoResult(t, result, 100*time.Millisecond)
+		if err := awaitLoss(t, result); err == nil || err.Error() != "pod app/web-1 was deleted" {
+			t.Fatalf("err = %v, want only the final deletion reported as pod app/web-1 was deleted", err)
+		}
 	})
 
 	t.Run("API 조회가 일시적으로 실패해도 다시 시도해 감시를 이어간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		h.getErrs = []error{errors.New("connection refused"), errors.New("connection refused")}
@@ -370,7 +405,7 @@ func TestPodWatch_Watching(t *testing.T) {
 		watcher, _ := h.watcher(t, 0)
 
 		// then
-		assertNoResult(t, result, 50*time.Millisecond)
+		assertRunning(t, result)
 		if h.getCount() != 3 {
 			t.Fatalf("get calls = %d, want 3", h.getCount())
 		}
@@ -381,14 +416,12 @@ func TestPodWatch_Watching(t *testing.T) {
 	})
 
 	t.Run("읽은 버전이 비어 있으면 감시를 열지 않고 다시 읽기를 반복하다 취소되면 끝난다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod(""))
 		ctx, cancel := context.WithCancel(context.Background())
 		result := h.start(ctx)
-		deadline := time.Now().Add(watchRestartWait)
-		for h.getCount() < 3 && time.Now().Before(deadline) {
-			time.Sleep(5 * time.Millisecond)
-		}
+		h.waitFor(t, func() bool { return h.gets >= 3 }, "three pod reads")
 
 		// when
 		cancel()
@@ -401,14 +434,16 @@ func TestPodWatch_Watching(t *testing.T) {
 }
 
 func TestPodWatch_OpenFailure(t *testing.T) {
+	t.Parallel()
 	openErrors := map[string]error{
 		"만료(410 Expired)": apierrors.NewResourceExpired("too old resource version"),
-		"사라짐(410 Gone)":   apierrors.NewGone("gone"),
+		"사라짐(410 Gone)":   apierrors.NewGone("gone"), //nolint:staticcheck // the API server can still answer 410 Gone
 		"그 밖의 연결 오류":      errors.New("connection refused"),
 		"권한 없음(403)":      apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "web-1", errors.New("no")),
 	}
 	for name, openErr := range openErrors {
 		t.Run(name+" 오류로 감시를 다시 열지 못하면 파드를 다시 읽고 새 버전부터 감시해 이후 삭제를 손실로 보고한다", func(t *testing.T) {
+			t.Parallel()
 			// given
 			h := newWatchHarness(watchedPod("100"))
 			h.openErrs = []error{nil, openErr, nil}
@@ -434,33 +469,40 @@ func TestPodWatch_OpenFailure(t *testing.T) {
 	}
 
 	t.Run("감시를 계속 열지 못해도 다시 읽기 대기 시간보다 빠르게 반복하지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
+		const retryDelay = 30 * time.Millisecond
+		const attempts = 4
 		h := newWatchHarness(watchedPod("100"))
 		h.openErrs = []error{errors.New("connection refused")}
 		ctx, cancel := context.WithCancel(context.Background())
-		monitor := &podWatch{pods: h.clientset.CoreV1().Pods("app"), namespace: "app", name: "web-1", retryDelay: 100 * time.Millisecond}
-		result := make(chan error, 1)
-		go func() { result <- monitor.run(ctx) }()
+		result := h.startMonitor(ctx, h.newMonitor(retryDelay))
 
 		// when
-		time.Sleep(550 * time.Millisecond)
+		h.waitFor(t, func() bool { return len(h.openTimes) >= attempts }, "repeated watch open attempts")
 		cancel()
 
 		// then
 		if err := awaitLoss(t, result); err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
-		if opens := h.openCount(); opens < 2 || opens > 7 {
-			t.Fatalf("watch open attempts = %d, want between 2 and 7 for a 100ms delay over 550ms", opens)
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for i := 1; i < attempts; i++ {
+			if gap := h.openTimes[i].Sub(h.openTimes[i-1]); gap < retryDelay {
+				t.Fatalf("open attempts #%d and #%d are %s apart, want at least the %s retry delay", i-1, i, gap, retryDelay)
+			}
 		}
 	})
 }
 
 func TestPodWatch_ExpectedUID(t *testing.T) {
+	t.Parallel()
 	t.Run("첫 조회 전에 같은 이름의 파드로 교체됐다면 교체됐다는 오류를 돌려주고 감시를 열지 않는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
-		monitor := &podWatch{pods: h.clientset.CoreV1().Pods("app"), namespace: "app", name: "web-1", expectedUID: "uid-0", retryDelay: 10 * time.Millisecond}
+		monitor := &podWatch{pods: h.clientset.CoreV1().Pods("app"), namespace: "app", name: "web-1", expectedUID: "uid-0", retryDelay: fastRetry}
 
 		// when
 		err := monitor.run(context.Background())
@@ -475,10 +517,11 @@ func TestPodWatch_ExpectedUID(t *testing.T) {
 	})
 
 	t.Run("기대한 UID와 같은 파드는 정상으로 보고 감시를 이어간다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		ctx, cancel := context.WithCancel(context.Background())
-		monitor := &podWatch{pods: h.clientset.CoreV1().Pods("app"), namespace: "app", name: "web-1", expectedUID: "uid-1", retryDelay: 10 * time.Millisecond}
+		monitor := &podWatch{pods: h.clientset.CoreV1().Pods("app"), namespace: "app", name: "web-1", expectedUID: "uid-1", retryDelay: fastRetry}
 		result := make(chan error, 1)
 		go func() { result <- monitor.run(ctx) }()
 
@@ -494,7 +537,9 @@ func TestPodWatch_ExpectedUID(t *testing.T) {
 }
 
 func TestPodWatch_Cancellation(t *testing.T) {
+	t.Parallel()
 	t.Run("감시 중에 컨텍스트를 취소하면 손실 없이 끝나고 감시를 닫는다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		ctx, cancel := context.WithCancel(context.Background())
@@ -508,16 +553,11 @@ func TestPodWatch_Cancellation(t *testing.T) {
 		if err := awaitLoss(t, result); err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
-		deadline := time.Now().Add(watchRestartWait)
-		for !watcher.IsStopped() && time.Now().Before(deadline) {
-			time.Sleep(5 * time.Millisecond)
-		}
-		if !watcher.IsStopped() {
-			t.Fatal("watch was not stopped after cancel")
-		}
+		eventually(t, watcher.IsStopped, "the watch to be stopped after cancel")
 	})
 
 	t.Run("조회를 재시도하는 중에 컨텍스트를 취소하면 손실 없이 끝난다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		h.getErrs = []error{errors.New("down"), errors.New("down"), errors.New("down"), errors.New("down"), errors.New("down")}
@@ -534,6 +574,7 @@ func TestPodWatch_Cancellation(t *testing.T) {
 	})
 
 	t.Run("다시 읽기 전 대기 중에 컨텍스트를 취소하면 손실 없이 끝난다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		ctx, cancel := context.WithCancel(context.Background())
@@ -542,7 +583,7 @@ func TestPodWatch_Cancellation(t *testing.T) {
 		go func() { result <- monitor.run(ctx) }()
 		first, _ := h.watcher(t, 0)
 		first.Error(&metav1.Status{Status: metav1.StatusFailure, Code: http.StatusGone})
-		time.Sleep(50 * time.Millisecond)
+		eventually(t, first.IsStopped, "the expired watch to be stopped")
 
 		// when
 		cancel()
@@ -551,11 +592,16 @@ func TestPodWatch_Cancellation(t *testing.T) {
 		if err := awaitLoss(t, result); err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
+		if h.watcherCount() != 1 {
+			t.Fatalf("watchers = %d, want no watch after the expiry", h.watcherCount())
+		}
 	})
 }
 
 func TestWatchPodLoss(t *testing.T) {
+	t.Parallel()
 	t.Run("실제 클라이언트셋 경로로 삭제를 감지해 오류를 돌려준다", func(t *testing.T) {
+		t.Parallel()
 		// given
 		h := newWatchHarness(watchedPod("100"))
 		result := make(chan error, 1)
