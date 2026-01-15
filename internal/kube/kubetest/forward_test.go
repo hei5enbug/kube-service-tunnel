@@ -262,7 +262,8 @@ func TestServer_PortForward(t *testing.T) {
 		// then
 		if err == nil {
 			select {
-			case <-forward.done:
+			case err := <-forward.done:
+				t.Logf("forward on a closing server ended with %v", err)
 			case <-time.After(eventTimeout):
 				t.Fatal("forward stayed open on a closing server")
 			}

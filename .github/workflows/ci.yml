@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      e2e:
+        description: Also run the end-to-end scenarios on a kind cluster
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      e2e:
+        description: Also run the end-to-end scenarios on a kind cluster
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MIN_COVERAGE: '95'
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go vet -tags e2e ./...
+
+      - name: Test
+        run: go test -race -shuffle=on -coverprofile=coverage.out ./...
+
+      - name: Check coverage
+        run: |
+          awk -v min="$MIN_COVERAGE" '
+            /^mode:/ { next }
+            NF == 3 { total += $2; if ($3 > 0) covered += $2 }
+            END {
+              if (total == 0) { print "No coverage data found in coverage.out"; exit 1 }
+              printf "Total coverage: %.2f%% (minimum %s%%)\n", covered * 100 / total, min
+              if (covered * 100 < min * total) exit 1
+            }' coverage.out
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          args: --build-tags e2e
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  e2e:
+    if: inputs.e2e
+    runs-on: ubuntu-latest
+    env:
+      KST_E2E_CONTEXT: kind-kst-e2e
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Create kind cluster
+        run: |
+          go install sigs.k8s.io/kind@v0.27.0
+          kind create cluster --name kst-e2e --kubeconfig "$RUNNER_TEMP/kst-e2e.kubeconfig" --wait 120s
+
+      - name: Run scenarios on kind
+        run: |
+          KST_E2E_KUBECONFIG="$RUNNER_TEMP/kst-e2e.kubeconfig" \
+            go test -tags e2e -race -count=1 -run TestScenariosKind -v ./cmd/dns

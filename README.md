@@ -268,6 +268,11 @@ It refuses to run on a context whose name does not start with `kind-`.
 Each scenario creates its own namespace with a random name, deletes it at the end,
 and uses a temporary proxy port instead of port 80.
 
+GitHub Actions runs the checks in `.github/workflows/ci.yml` on every push to `main` and on every pull request.
+The checks are gofmt, `go vet`, golangci-lint, govulncheck and the tests with the race detector on Linux and macOS.
+The test job also fails when the total coverage drops below 95%.
+A release tag runs the same checks and the kind scenarios, and GoReleaser builds the release only after they pass.
+
 ```bash
 kind create cluster --name kst-e2e --kubeconfig /tmp/kst-e2e.kubeconfig
 KST_E2E_KUBECONFIG=/tmp/kst-e2e.kubeconfig KST_E2E_CONTEXT=kind-kst-e2e \

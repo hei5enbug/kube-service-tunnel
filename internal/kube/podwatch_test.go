@@ -152,7 +152,10 @@ func (h *watchHarness) startUntilCleanup(t *testing.T) <-chan error {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-result:
+		case err := <-result:
+			if err != nil {
+				t.Errorf("pod monitor returned %v after cancel, want nil", err)
+			}
 		case <-time.After(testWait):
 			t.Error("pod monitor did not stop after cancel")
 		}

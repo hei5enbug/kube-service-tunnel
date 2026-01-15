@@ -237,8 +237,8 @@ func TestQuitOnSignal(t *testing.T) {
 			t.Fatal("app stopped without a signal")
 		}
 		select {
-		case <-running.done:
-			t.Fatal("app stopped without a signal")
+		case err := <-running.done:
+			t.Fatalf("app stopped without a signal: %v", err)
 		default:
 		}
 	})

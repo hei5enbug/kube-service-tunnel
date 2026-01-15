@@ -126,7 +126,7 @@ func eventLoopResponds(app *tview.Application) bool {
 	return waitFor(processed, eventLoopTimeout)
 }
 
-func waitFor(ch <-chan error, timeout time.Duration) bool {
+func waitFor[T any](ch <-chan T, timeout time.Duration) bool {
 	select {
 	case <-ch:
 		return true
