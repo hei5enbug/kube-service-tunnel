@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -308,6 +309,72 @@ func TestStopPortForward(t *testing.T) {
 		case <-exited:
 		case <-time.After(testWait):
 			t.Fatal("forward did not exit after stop")
+		}
+	})
+
+	slowRelease := func(released *atomic.Int32) forwardRunner {
+		return func(request forwardRequest, stopCh <-chan struct{}, readyCh chan struct{}) error {
+			close(readyCh)
+			<-stopCh
+			time.Sleep(20 * time.Millisecond)
+			released.Add(1)
+			return nil
+		}
+	}
+
+	t.Run("중지는 포워딩이 끝나 로컬 포트를 놓은 뒤에 반환한다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		var released atomic.Int32
+		client := newPortForwardClient(slowRelease(&released), testWait)
+		key := startTestForward(t, client, 40000)
+
+		// when
+		err := client.StopPortForward(key)
+
+		// then
+		if err != nil || released.Load() != 1 {
+			t.Fatalf("err = %v, released = %d, want nil and 1", err, released.Load())
+		}
+	})
+
+	t.Run("전체 중지는 모든 포워딩이 끝난 뒤에 반환한다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		var released atomic.Int32
+		client := newPortForwardClient(slowRelease(&released), testWait)
+		startTestForward(t, client, 40000)
+		startTestForward(t, client, 40001)
+
+		// when
+		client.StopAllPortForwards()
+
+		// then
+		if got := released.Load(); got != 2 {
+			t.Fatalf("released = %d, want 2", got)
+		}
+	})
+
+	t.Run("포워딩이 끝나지 않아도 중지 대기 시간이 지나면 반환한다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		hang := make(chan struct{})
+		t.Cleanup(func() { close(hang) })
+		runner := func(request forwardRequest, stopCh <-chan struct{}, readyCh chan struct{}) error {
+			close(readyCh)
+			<-hang
+			return nil
+		}
+		client := newPortForwardClient(runner, testWait)
+		client.stopTimeout = 10 * time.Millisecond
+		key := startTestForward(t, client, 40000)
+
+		// when
+		err := client.StopPortForward(key)
+
+		// then
+		if err != nil || client.forwardCount() != 0 {
+			t.Fatalf("err = %v, count = %d, want nil and 0", err, client.forwardCount())
 		}
 	})
 

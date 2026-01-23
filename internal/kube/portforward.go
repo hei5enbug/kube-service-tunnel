@@ -231,7 +231,22 @@ func (p *portForwardClient) StopPortForward(key string) error {
 	p.mu.Unlock()
 
 	forward.stop()
+	p.awaitReleased([]*PortForward{forward})
 	return nil
+}
+
+// awaitReleased waits until the stopped forwards have closed their local listeners, or until stopTimeout passes,
+// so a caller can reuse their local ports right away.
+func (p *portForwardClient) awaitReleased(forwards []*PortForward) {
+	deadline := time.NewTimer(p.stopTimeout)
+	defer deadline.Stop()
+	for _, forward := range forwards {
+		select {
+		case <-forward.doneCh:
+		case <-deadline.C:
+			return
+		}
+	}
 }
 
 func (p *portForwardClient) StopAllPortForwards() {
@@ -246,4 +261,5 @@ func (p *portForwardClient) StopAllPortForwards() {
 	for _, forward := range forwards {
 		forward.stop()
 	}
+	p.awaitReleased(forwards)
 }

@@ -110,8 +110,9 @@ func (p *pane) selectedIndex() (int, bool) {
 	return index, index >= 0 && index < len(p.keys)
 }
 
+// rememberCursor records the row under the cursor, unless resetCursor asked the next render to start over.
 func (p *pane) rememberCursor() {
-	if len(p.keys) == 0 {
+	if len(p.keys) == 0 || !p.hasCursor {
 		return
 	}
 	row, _ := p.table.GetSelection()
@@ -149,8 +150,12 @@ func (a *App) drawTable(p *pane, view tableView) {
 		for row, line := range strings.Split(view.empty, "\n") {
 			p.table.SetCell(row, 0, a.newCell(viewCell{text: line, kind: cellDim}).SetSelectable(false))
 		}
+		// With selectable rows, tview's draw pushes the selection past the last line when no cell is selectable,
+		// and a cursor key then loops forever looking for that selection again.
+		p.table.SetSelectable(false, false)
 		return
 	}
+	p.table.SetSelectable(true, false)
 	p.offset = 0
 	if view.header != nil {
 		for column, cell := range view.header {

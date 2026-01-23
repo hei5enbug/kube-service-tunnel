@@ -220,3 +220,65 @@ func TestDeleteTunnelGuards(t *testing.T) {
 		}
 	})
 }
+
+func TestMovingCursorInEmptiedPanes(t *testing.T) {
+	t.Parallel()
+	moves := []struct {
+		name  string
+		press func(r *runningApp)
+	}{
+		{"아래 화살표", func(r *runningApp) { r.press(tcell.KeyDown) }},
+		{"위 화살표", func(r *runningApp) { r.press(tcell.KeyUp) }},
+		{"j", func(r *runningApp) { r.typeText("j") }},
+		{"k", func(r *runningApp) { r.typeText("k") }},
+	}
+	for _, move := range moves {
+		t.Run("터널이 하나도 없는 Tunnels 창에서 "+move.name+" 키 뒤에도 앱이 응답한다", func(t *testing.T) {
+			t.Parallel()
+			// given
+			running := tunnelsApp(t, nil)
+			running.settle(t)
+
+			// when
+			move.press(running)
+
+			// then
+			running.settle(t)
+		})
+
+		t.Run("터널을 모두 잃어 Tunnels 창이 비면 "+move.name+" 키 뒤에도 앱이 응답한다", func(t *testing.T) {
+			t.Parallel()
+			// given
+			running := tunnelsApp(t, []dns.DNSTunnel{
+				tunnel("dev", "api", "admin"), tunnel("dev", "api", "web"), tunnel("dev", "api", "website"),
+			})
+			running.moveCursorTo(t, store.FocusTunnels, "website.api")
+			for _, dnsURL := range []string{"admin.api", "web.api", "website.api"} {
+				running.manager.loseTunnel(dnsURL)
+			}
+			eventually(t, "empty Tunnels pane", func() bool {
+				return uiValue(t, running, func() int { return len(running.app.pane(store.FocusTunnels).keys) }) == 0
+			})
+
+			// when
+			move.press(running)
+
+			// then
+			running.settle(t)
+		})
+
+		t.Run("필터에 맞는 서비스가 없어 Services 창이 비면 "+move.name+" 키 뒤에도 앱이 응답한다", func(t *testing.T) {
+			t.Parallel()
+			// given
+			running := servicesApp(t)
+			running.moveCursorTo(t, store.FocusServices, serviceKey("api", "website"))
+			running.applyFilter(t, store.FocusServices, "no-such-service")
+
+			// when
+			move.press(running)
+
+			// then
+			running.settle(t)
+		})
+	}
+}

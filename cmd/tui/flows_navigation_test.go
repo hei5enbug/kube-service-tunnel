@@ -72,6 +72,27 @@ func TestEnterMovesFocus(t *testing.T) {
 		}
 	})
 
+	t.Run("컨텍스트를 바꾸면 Services 커서가 새 목록의 첫 행으로 간다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		running := startLoadedApp(t)
+		running.typeText("3")
+		running.waitFocus(t, store.FocusServices)
+		running.moveCursorTo(t, store.FocusServices, serviceKey("api", "website"))
+		running.typeText("1")
+		running.waitFocus(t, store.FocusContexts)
+		running.moveCursorTo(t, store.FocusContexts, "prod")
+
+		// when
+		running.press(tcell.KeyEnter)
+
+		// then
+		running.waitFocus(t, store.FocusNamespaces)
+		if got := running.cursorKey(t, store.FocusServices); got != serviceKey("shop", "cart") {
+			t.Fatalf("service cursor = %q, want %q", got, serviceKey("shop", "cart"))
+		}
+	})
+
 	t.Run("Shift+Tab은 이전 창으로 가고 처음에서는 마지막 창으로 돈다", func(t *testing.T) {
 		t.Parallel()
 		// given
