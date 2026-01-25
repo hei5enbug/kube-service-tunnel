@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/byoungmin/kube-service-tunnel/cmd/dns"
 	"github.com/byoungmin/kube-service-tunnel/cmd/tui/store"
@@ -18,6 +19,9 @@ import (
 )
 
 const mainPage = "main"
+
+// quitGrace is how long a shutdown signal waits for the event loop to stop before cleaning up without it.
+const quitGrace = 3 * time.Second
 
 // App owns the widgets. Fields below the services are touched only on the UI goroutine.
 type App struct {
@@ -94,6 +98,9 @@ type runDeps struct {
 	copier         clipboard.Copier
 	watchSignals   func() (signals <-chan os.Signal, stop func())
 	screen         tcell.Screen
+	quitGrace      time.Duration
+	// exitHung ends the process after cleanup when the event loop did not stop after a shutdown signal.
+	exitHung func(cleanupErr error)
 }
 
 func Run(kubeconfigPath string) error {
@@ -108,7 +115,17 @@ func Run(kubeconfigPath string) error {
 		},
 		copier:       clipboard.NewSystem(),
 		watchSignals: notifyShutdownSignals,
+		quitGrace:    quitGrace,
+		exitHung:     exitHung,
 	})
+}
+
+func exitHung(cleanupErr error) {
+	fmt.Fprintln(os.Stderr, "Error: the screen did not stop after the shutdown signal; cleaned up and exited")
+	if cleanupErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", cleanupErr)
+	}
+	os.Exit(1)
 }
 
 func notifyShutdownSignals() (<-chan os.Signal, func()) {
@@ -139,16 +156,21 @@ func run(kubeconfigPath string, deps runDeps) (runErr error) {
 
 	sigChan, stopSignals := deps.watchSignals()
 	defer stopSignals()
-	defer func() {
+	cleanup := sync.OnceValue(func() error {
 		cancel()
-		if cleanupErr := manager.Cleanup(); cleanupErr != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("cleanup: %w", cleanupErr))
+		if err := manager.Cleanup(); err != nil {
+			return fmt.Errorf("cleanup: %w", err)
 		}
-	}()
+		return nil
+	})
+	defer func() { runErr = errors.Join(runErr, cleanup()) }()
 
-	go app.quitOnSignal(sigChan)
+	stopped := make(chan struct{})
+	go app.quitOnSignal(sigChan, stopped, deps.quitGrace, func() { deps.exitHung(cleanup()) })
 	app.start()
-	return app.app.Run()
+	err = app.app.Run()
+	close(stopped)
+	return err
 }
 
 func newApp(ctx context.Context, cancel context.CancelFunc, deps dependencies) *App {
@@ -216,11 +238,22 @@ func (a *App) background(fn func()) {
 	}()
 }
 
-func (a *App) quitOnSignal(sigChan <-chan os.Signal) {
+// quitOnSignal stops the app on a shutdown signal. A handler that never returns keeps the event loop, and with it
+// the deferred cleanup, from ending, so hung runs when stopped is not closed within grace. Quit runs on its own
+// goroutine because a hung draw holds the lock that stopping the screen needs.
+func (a *App) quitOnSignal(sigChan <-chan os.Signal, stopped <-chan struct{}, grace time.Duration, hung func()) {
 	select {
 	case <-sigChan:
-		a.Quit()
 	case <-a.ctx.Done():
+		return
+	}
+	go a.Quit()
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-stopped:
+	case <-timer.C:
+		hung()
 	}
 }
 

@@ -26,9 +26,15 @@ type runHarness struct {
 	receivedPath chan string
 	initialized  chan struct{}
 	result       chan error
+	hungExits    chan error
 }
 
 func startRun(t *testing.T, manager *fakeManager) *runHarness {
+	t.Helper()
+	return startRunWithGrace(t, manager, eventLoopTimeout)
+}
+
+func startRunWithGrace(t *testing.T, manager *fakeManager, grace time.Duration) *runHarness {
 	t.Helper()
 	h := &runHarness{
 		manager:      manager,
@@ -38,6 +44,7 @@ func startRun(t *testing.T, manager *fakeManager) *runHarness {
 		receivedPath: make(chan string, 2),
 		initialized:  make(chan struct{}),
 		result:       make(chan error, 1),
+		hungExits:    make(chan error, 1),
 	}
 	deps := runDeps{
 		newKubeAdapter: func(path string) (kube.KubeAdapterInterface, error) {
@@ -50,7 +57,9 @@ func startRun(t *testing.T, manager *fakeManager) *runHarness {
 			close(h.initialized)
 			return h.signals, func() { h.stopped.Add(1) }
 		},
-		screen: h.screen,
+		screen:    h.screen,
+		quitGrace: grace,
+		exitHung:  func(cleanupErr error) { h.hungExits <- cleanupErr },
 	}
 	go func() { h.result <- run("/tmp/kubeconfig", deps) }()
 	return h
@@ -212,6 +221,34 @@ func TestRunShutdown(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+	t.Run("화면 루프가 멈춰 있으면 종료 신호 뒤 유예 시간이 지나 매니저를 정리하고 프로세스를 끝낸다", func(t *testing.T) {
+		t.Parallel()
+		// given
+		cleanupErr := errors.New("forward still open")
+		gate := make(chan struct{})
+		h := startRunWithGrace(t, &fakeManager{cleanupErr: cleanupErr, listGate: gate}, 50*time.Millisecond)
+		t.Cleanup(func() {
+			close(gate)
+			_ = h.wait(t)
+		})
+		h.waitRunning(t)
+
+		// when
+		h.signals <- syscall.SIGTERM
+
+		// then
+		select {
+		case err := <-h.hungExits:
+			if !errors.Is(err, cleanupErr) {
+				t.Fatalf("cleanup error = %v, want %v", err, cleanupErr)
+			}
+		case <-time.After(eventLoopTimeout):
+			t.Fatal("the process did not end while the event loop was hung")
+		}
+		if got := h.manager.cleanupCalls(); got != 1 {
+			t.Fatalf("cleanup calls = %d, want 1", got)
+		}
+	})
 }
 
 func TestQuitOnSignal(t *testing.T) {
@@ -222,7 +259,7 @@ func TestQuitOnSignal(t *testing.T) {
 		running := startTestApp(t)
 		returned := make(chan error, 1)
 		go func() {
-			running.app.quitOnSignal(make(chan os.Signal))
+			running.app.quitOnSignal(make(chan os.Signal), make(chan struct{}), eventLoopTimeout, func() {})
 			returned <- nil
 		}()
 
@@ -248,7 +285,7 @@ func TestQuitOnSignal(t *testing.T) {
 		// given
 		running := startTestApp(t)
 		signals := make(chan os.Signal, 1)
-		go running.app.quitOnSignal(signals)
+		go running.app.quitOnSignal(signals, make(chan struct{}), eventLoopTimeout, func() {})
 
 		// when
 		signals <- syscall.SIGHUP

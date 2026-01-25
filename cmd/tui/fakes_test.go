@@ -30,7 +30,8 @@ type bulkCall struct {
 
 // fakeManager applies registrations and updates to its tunnel list. busyFallback, when set, is the port it uses
 // instead of any requested local port. updateErr fails an update, except that an error wrapping
-// dns.ErrUpdateCleanup still applies it.
+// dns.ErrUpdateCleanup still applies it. listGate, when set, blocks every listing after the first, which newApp
+// makes before the event loop starts.
 type fakeManager struct {
 	mu            sync.Mutex
 	tunnels       []dns.DNSTunnel
@@ -49,12 +50,22 @@ type fakeManager struct {
 	cleanupErr    error
 	cleanups      int
 	listings      int
+	listGate      chan struct{}
 }
 
 func (m *fakeManager) GetAllDNSTunnels() []dns.DNSTunnel {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.listings++
+	gate := m.listGate
+	if m.listings == 1 {
+		gate = nil
+	}
+	m.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return slices.Clone(m.tunnels)
 }
 
